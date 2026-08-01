@@ -1,9 +1,9 @@
 <h1 align="center">
   <br>
-  Pion Template
+  Pion DTLS-interop
   <br>
 </h1>
-<h4 align="center">Template for new Pion repositoies</h4>
+<h4 align="center">Pion/DTLS interoperability runner tool for testing pion/dtls against other implementations</h4>
 <p align="center">
   <a href="https://pion.ly"><img src="https://img.shields.io/badge/pion-dtls-gray.svg?longCache=true&colorB=brightgreen" alt="Pion dtls-interop"></a>
   <a href="https://discord.gg/PngbdqpFbt"><img src="https://img.shields.io/badge/join-us%20on%20discord-gray.svg?longCache=true&logo=discord&colorB=brightblue" alt="join us on Discord"></a> <a href="https://bsky.app/profile/pion.ly"><img src="https://img.shields.io/badge/follow-us%20on%20bluesky-gray.svg?longCache=true&logo=bluesky&colorB=brightblue" alt="Follow us on Bluesky"></a>  <br>
@@ -16,10 +16,13 @@ Pion's DTLS interoperability runner is an automated test framework that verifies
 
 Supported Implementations:
 
-- [x] - OpenSSL.
-
-In Progress:
-- BoringSSL.
+- [ ] - OpenSSl:
+  - [ ] - v4 with 1.2.
+  - [ ] - v3 with 1.2.
+- [ ] - BoringSSL
+  - [ ] - 1.2
+  - [ ] - 1.3
+  - [ ] - dual mode
 
 ### Contributing
 Check out the [contributing wiki](https://github.com/pion/webrtc/wiki/Contributing) to join the group of amazing people making this project possible
