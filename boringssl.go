@@ -29,6 +29,9 @@ const (
 	packetedBIOHeaderSize       = 5
 	maxPacketedBIODatagramSize  = 1<<16 - 1
 	boringSSLX25519CurveGroupID = 29
+
+	boringSSL13MessageTrace       = "read hs 1\nwrite hs 2\nwrite hs 8\nwrite hs 11\nwrite hs 15\nwrite hs 20\nread hs 20\nwrite ack\nread alert 1 0\n"        // nolint:lll
+	boringSSL13ClientMessageTrace = "write hs 1\nread hs 2\nread hs 8\nread hs 11\nread hs 15\nread hs 20\nwrite hs 20\nread ack\nread hs 4\nread alert 1 0\n" // nolint:lll
 )
 
 var (
@@ -122,6 +125,64 @@ func probeBoringSSL13(
 	if err = process.wait(ctx); err != nil {
 		return err
 	}
+	_, _ = fmt.Fprintf(stdout, "PASS %s: BoringSSL acknowledged Pion's final handshake flight\n", boringSSL13Mode)
+
+	return probeBoringSSL13PionServer(ctx, shimPath, stdout, commandContext)
+}
+
+func probeBoringSSL13PionServer(
+	ctx context.Context,
+	shimPath string,
+	stdout io.Writer,
+	commandContext commandContextFunc,
+) error {
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(ctx, "tcp4", "127.0.0.1:0")
+	if err != nil {
+		return fmt.Errorf("listen for bssl_shim: %w", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	tcpAddress, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return fmt.Errorf("%w: %q", errUnexpectedListener, listener.Addr())
+	}
+
+	process, err := startBoringSSLClientShim(ctx, shimPath, tcpAddress.Port, commandContext)
+	if err != nil {
+		return err
+	}
+	defer process.stop()
+
+	connection, err := acceptShimConnection(ctx, listener, process)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = connection.Close() }()
+
+	if err = readAndValidateShimID(ctx, connection); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(
+		stdout,
+		"PASS %s (Pion server / BoringSSL client): shim TCP bootstrap connected\n",
+		boringSSL13Mode,
+	)
+
+	packetedConnection := &packetedConn{Conn: connection}
+	if err = runPionDTLS13Server(ctx, packetedConnection, stdout); err != nil {
+		process.stop()
+
+		return process.outputError(err)
+	}
+	if err = process.wait(ctx); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(
+		stdout,
+		"PASS %s (Pion server / BoringSSL client): BoringSSL accepted Pion's terminal ACK\n",
+		boringSSL13Mode,
+	)
 
 	return nil
 }
@@ -145,6 +206,7 @@ func startBoringSSLShim(
 		"-shim-id", strconv.FormatUint(shimID, 10),
 		"-dtls",
 		"-server",
+		"-expect-msg-callback", boringSSL13MessageTrace,
 		"-min-version", strconv.Itoa(dtls13Version),
 		"-max-version", strconv.Itoa(dtls13Version),
 		"-curves", strconv.Itoa(boringSSLX25519CurveGroupID),
@@ -152,7 +214,47 @@ func startBoringSSLShim(
 		"-key-file", credentials.privateKeyPath,
 		"-no-ticket",
 		"-shim-writes-first",
-		"-shim-shuts-down",
+	)
+	command.Stdout = &process.stdout
+	command.Stderr = &process.stderr
+
+	if err := command.Start(); err != nil {
+		cancelChild()
+
+		return nil, fmt.Errorf("start bssl_shim: %w", err)
+	}
+
+	go func() {
+		process.waitErr = command.Wait()
+		close(process.waitDone)
+	}()
+
+	return process, nil
+}
+
+func startBoringSSLClientShim(
+	ctx context.Context,
+	shimPath string,
+	port int,
+	commandContext commandContextFunc,
+) (*shimProcess, error) {
+	childCtx, cancelChild := context.WithCancel(ctx)
+	process := &shimProcess{
+		cancel:   cancelChild,
+		waitDone: make(chan struct{}),
+	}
+	command := commandContext(
+		childCtx,
+		shimPath,
+		"-port", strconv.Itoa(port),
+		"-shim-id", strconv.FormatUint(shimID, 10),
+		"-dtls",
+		"-expect-msg-callback", boringSSL13ClientMessageTrace,
+		"-min-version", strconv.Itoa(dtls13Version),
+		"-max-version", strconv.Itoa(dtls13Version),
+		"-curves", strconv.Itoa(boringSSLX25519CurveGroupID),
+		"-no-ticket",
+		"-shim-writes-first",
 	)
 	command.Stdout = &process.stdout
 	command.Stderr = &process.stderr
