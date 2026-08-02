@@ -14,6 +14,29 @@
 
 Pion's DTLS interoperability runner is an automated test framework that verifies real-world DTLS compatibility by running live handshakes and data flows between Pion and other DTLS implementations, ensuring protocol correctness and cross-implementation reliability.
 
+## Running interop tests
+
+Run the BoringSSL DTLS 1.3 test against the pion/dtls version in `go.mod`:
+
+```sh
+task interop:boringssl13
+```
+
+Pass a branch, tag, or commit to clone it into `.cache/pion-dtls` and test that checkout. An existing cached checkout is reused:
+
+```sh
+task interop:boringssl13 -- main
+task interop:boringssl13 -- v4.0.0
+task interop:boringssl13 -- 28f4ba88480f756820e11541d3fa6c4bd13cdda8
+task interop:boringssl13 -- 7975646a9e9e494a1371ef73075a909ffeb2605f
+```
+
+You can also pass a relative or absolute path to an existing pion/dtls checkout:
+
+```sh
+task interop:boringssl13 -- ../dtls
+```
+
 ## Development environment
 
 The repo is developed with Nix/Devenv for the best dev experince we recommend using Devenv,
