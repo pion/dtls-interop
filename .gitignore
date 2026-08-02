@@ -11,9 +11,18 @@
 
 ### Folders ###
 ###############
+.devenv/
+.devenv.flake.nix
+.direnv/
 bin/
 vendor/
 node_modules/
+
+### devenv local configuration ###
+#################################
+devenv.local.nix
+devenv.local.yaml
+devenv.local.lock
 
 ### Files ###
 #############

@@ -14,6 +14,18 @@
 
 Pion's DTLS interoperability runner is an automated test framework that verifies real-world DTLS compatibility by running live handshakes and data flows between Pion and other DTLS implementations, ensuring protocol correctness and cross-implementation reliability.
 
+## Development environment
+
+The repo is developed with Nix/Devenv for the best dev experince we recommend using Devenv,
+to install all the tools and dependencies, Simply run `devenv shell`:
+
+```sh
+devenv shell
+openssl-3 version
+openssl-4 version
+bssl-shim -is-handshaker-supported
+```
+
 Supported Implementations:
 
 - [ ] - OpenSSl:
