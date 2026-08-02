@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+# SPDX-License-Identifier: MIT
+
+version: '3'
+
+tasks:
+  clone:
+    desc: Clone a pion/dtls branch, tag, or commit into a new checkout
+    silent: true
+    cmds:
+      - |
+        set -eu
+
+        ref='{{.CLI_ARGS}}'
+        if [ -z "$ref" ]; then
+          echo "usage: task pion:clone -- <branch, tag, or commit>" >&2
+          exit 1
+        fi
+
+        destination=".cache/pion-dtls/$ref"
+        if [ -e "$destination" ]; then
+          echo "checkout already exists: $destination" >&2
+          exit 1
+        fi
+
+        mkdir -p "$(dirname "$destination")"
+        git init --quiet "$destination"
+        git -C "$destination" fetch --quiet --depth=1 https://github.com/pion/dtls.git "$ref"
+        git -C "$destination" checkout --quiet --detach FETCH_HEAD
+        echo "PION_DTLS_DIR=$destination"
