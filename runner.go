@@ -43,7 +43,7 @@ func runCLI() int {
 			return 0
 		}
 
-		_, _ = fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "dtls-interop: %v\n", err)
 
 		return 1
 	}

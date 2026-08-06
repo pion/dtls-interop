@@ -15,7 +15,7 @@ tasks:
 
         source="$PION_DTLS_SOURCE"
         if [ -z "$source" ]; then
-          exec go run . -mode boringssl-dtls13
+          exec go test -tags=interop .
         fi
 
         if [ -d "$source" ]; then
@@ -39,8 +39,6 @@ tasks:
 
         project_directory="$(pwd -P)"
         dtls_directory="$(cd "$dtls_directory" && pwd -P)"
-        module_path="$(cd "$dtls_directory" && go list -m)"
-
         workspace_directory="$(mktemp -d "${TMPDIR:-/tmp}/dtls-interop.XXXXXX")"
         (
           cd "$workspace_directory"
@@ -48,7 +46,7 @@ tasks:
         )
 
         status=0
-        GOWORK="$workspace_directory/go.work" go run . -mode boringssl-dtls13 || status=$?
+        GOWORK="$workspace_directory/go.work" go test -tags=interop . || status=$?
         rm -rf -- "$workspace_directory"
         exit "$status"
 

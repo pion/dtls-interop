@@ -92,7 +92,7 @@ func runPionDTLS13Exchange(
 	if err := connection.HandshakeContext(ctx); err != nil {
 		return fmt.Errorf("pion DTLS 1.3 handshake: %w", err)
 	}
-	_, _ = fmt.Fprintf(stdout, "PASS %s: Pion DTLS 1.3 %s handshake completed\n", boringSSL13Mode, role)
+	_, _ = fmt.Fprintf(stdout, "Pion DTLS 1.3 %s handshake completed\n", role)
 
 	received := make([]byte, len(boringSSLApplicationMessage))
 	if _, err := io.ReadFull(connection, received); err != nil {
@@ -106,13 +106,7 @@ func runPionDTLS13Exchange(
 			boringSSLApplicationMessage,
 		)
 	}
-	_, _ = fmt.Fprintf(
-		stdout,
-		"PASS %s: Pion %s application record %q\n",
-		boringSSL13Mode,
-		applicationRecordDescription,
-		received,
-	)
+	_, _ = fmt.Fprintf(stdout, "Pion %s application record %q\n", applicationRecordDescription, received)
 
 	pionPayload := []byte(pionApplicationMessage)
 	written, err := connection.Write(pionPayload)
@@ -133,7 +127,7 @@ func runPionDTLS13Exchange(
 	if !bytes.Equal(echoed, pionPayload) {
 		return fmt.Errorf("unexpected BoringSSL echo: got %x, want %x", echoed, pionPayload) //nolint:err113
 	}
-	_, _ = fmt.Fprintf(stdout, "PASS %s: BoringSSL received and echoed Pion application record\n", boringSSL13Mode)
+	_, _ = fmt.Fprintln(stdout, "BoringSSL received and echoed Pion application record")
 
 	connectionClosed = true
 	if err = connection.Close(); err != nil {

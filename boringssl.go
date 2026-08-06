@@ -72,6 +72,19 @@ func probeBoringSSL13(
 	stdout io.Writer,
 	commandContext commandContextFunc,
 ) error {
+	if err := probeBoringSSL13PionClient(ctx, shimPath, stdout, commandContext); err != nil {
+		return err
+	}
+
+	return probeBoringSSL13PionServer(ctx, shimPath, stdout, commandContext)
+}
+
+func probeBoringSSL13PionClient(
+	ctx context.Context,
+	shimPath string,
+	stdout io.Writer,
+	commandContext commandContextFunc,
+) error {
 	if shimPath == "" {
 		return errEmptyShimPath
 	}
@@ -110,11 +123,7 @@ func probeBoringSSL13(
 	if err = readAndValidateShimID(ctx, connection); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(
-		stdout,
-		"PASS %s: shim TCP bootstrap connected\n",
-		boringSSL13Mode,
-	)
+	_, _ = fmt.Fprintln(stdout, "BoringSSL server shim TCP bootstrap connected")
 
 	packetedConnection := &packetedConn{Conn: connection}
 	if err = runPionDTLS13Client(ctx, packetedConnection, stdout); err != nil {
@@ -125,9 +134,9 @@ func probeBoringSSL13(
 	if err = process.wait(ctx); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(stdout, "PASS %s: BoringSSL acknowledged Pion's final handshake flight\n", boringSSL13Mode)
+	_, _ = fmt.Fprintln(stdout, "BoringSSL server acknowledged Pion's final handshake flight")
 
-	return probeBoringSSL13PionServer(ctx, shimPath, stdout, commandContext)
+	return nil
 }
 
 func probeBoringSSL13PionServer(
@@ -136,6 +145,10 @@ func probeBoringSSL13PionServer(
 	stdout io.Writer,
 	commandContext commandContextFunc,
 ) error {
+	if shimPath == "" {
+		return errEmptyShimPath
+	}
+
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(ctx, "tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -163,11 +176,7 @@ func probeBoringSSL13PionServer(
 	if err = readAndValidateShimID(ctx, connection); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(
-		stdout,
-		"PASS %s (Pion server / BoringSSL client): shim TCP bootstrap connected\n",
-		boringSSL13Mode,
-	)
+	_, _ = fmt.Fprintln(stdout, "BoringSSL client shim TCP bootstrap connected")
 
 	packetedConnection := &packetedConn{Conn: connection}
 	if err = runPionDTLS13Server(ctx, packetedConnection, stdout); err != nil {
@@ -178,11 +187,7 @@ func probeBoringSSL13PionServer(
 	if err = process.wait(ctx); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(
-		stdout,
-		"PASS %s (Pion server / BoringSSL client): BoringSSL accepted Pion's terminal ACK\n",
-		boringSSL13Mode,
-	)
+	_, _ = fmt.Fprintln(stdout, "BoringSSL client accepted Pion's terminal ACK")
 
 	return nil
 }
