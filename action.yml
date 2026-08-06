@@ -23,7 +23,7 @@ runs:
 
     - name: Install Devenv
       shell: bash
-      // we pin to v1.11.2 until https://github.com/cachix/devenv/issues/3064 is fixed.
+      # Pin until https://github.com/cachix/devenv/issues/3064 is fixed.
       run: nix profile add github:cachix/devenv/v1.11.2
 
     - name: Run DTLS interoperability tests
