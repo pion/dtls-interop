@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+# SPDX-License-Identifier: MIT
+
+name: Pion DTLS interoperability tests
+description: Run the Pion DTLS interoperability suite against a DTLS checkout
+
+inputs:
+  dtls-path:
+    description: Path to the pion/dtls checkout, relative to the caller workspace or absolute
+    required: false
+    default: .
+
+runs:
+  using: composite
+  steps:
+    - name: Install Nix
+      uses: cachix/install-nix-action@v31
+
+    - name: Configure the Devenv binary cache
+      uses: cachix/cachix-action@v17
+      with:
+        name: devenv
+
+    - name: Install Devenv
+      shell: bash
+      run: nix profile add github:cachix/devenv/v1.11.2
+
+    - name: Run DTLS interoperability tests
+      shell: bash
+      env:
+        DTLS_PATH: ${{ inputs.dtls-path }}
+      run: |
+        if [[ "$DTLS_PATH" != /* ]]; then
+          DTLS_PATH="$GITHUB_WORKSPACE/$DTLS_PATH"
+        fi
+
+        cd "$GITHUB_ACTION_PATH"
+
+        devenv shell -- task interop:boringssl13 -- "$DTLS_PATH"

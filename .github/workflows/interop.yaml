@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+# SPDX-License-Identifier: MIT
+
+name: Interoperability
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: interop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  boringssl:
+    name: pion/dtls main interop
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out DTLS interop
+        uses: actions/checkout@v7
+
+      - name: Check out DTLS main
+        uses: actions/checkout@v7
+        with:
+          repository: pion/dtls
+          ref: main
+          path: dtls
+
+      - name: Run interoperability tests
+        uses: ./
+        with:
+          dtls-path: dtls
