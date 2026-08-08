@@ -43,4 +43,4 @@ runs:
 
         cd "$GITHUB_ACTION_PATH"
 
-        devenv shell -- task interop:boringssl13 -- "$DTLS_PATH"
+        devenv shell -- task interop -- "$DTLS_PATH"
