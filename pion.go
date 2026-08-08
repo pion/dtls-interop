@@ -25,7 +25,12 @@ const (
 
 var errUnexpectedBoringSSLApplicationData = errors.New("unexpected BoringSSL application data")
 
-func runPionDTLS13Client(ctx context.Context, connection net.Conn, stdout io.Writer) error {
+func runPionDTLS13Client(
+	ctx context.Context,
+	connection net.Conn,
+	stdout io.Writer,
+	keyUpdate bool,
+) error {
 	client, err := dtls.ClientWithOptions(
 		dtlsnet.PacketConnFromConn(connection),
 		connection.RemoteAddr(),
@@ -43,10 +48,16 @@ func runPionDTLS13Client(ctx context.Context, connection net.Conn, stdout io.Wri
 		stdout,
 		"client",
 		"processed BoringSSL's terminal ACK and received",
+		keyUpdate,
 	)
 }
 
-func runPionDTLS13Server(ctx context.Context, connection net.Conn, stdout io.Writer) error {
+func runPionDTLS13Server(
+	ctx context.Context,
+	connection net.Conn,
+	stdout io.Writer,
+	keyUpdate bool,
+) error {
 	certificate, err := selfsign.GenerateSelfSigned()
 	if err != nil {
 		return fmt.Errorf("generate Pion DTLS 1.3 server certificate: %w", err)
@@ -66,7 +77,7 @@ func runPionDTLS13Server(ctx context.Context, connection net.Conn, stdout io.Wri
 		return fmt.Errorf("create Pion DTLS 1.3 server: %w", err)
 	}
 
-	return runPionDTLS13Exchange(ctx, server, stdout, "server", "received")
+	return runPionDTLS13Exchange(ctx, server, stdout, "server", "received", keyUpdate)
 }
 
 // nolint:cyclop
@@ -76,6 +87,7 @@ func runPionDTLS13Exchange(
 	stdout io.Writer,
 	role string,
 	applicationRecordDescription string,
+	keyUpdate bool,
 ) error {
 	connectionClosed := false
 	defer func() {
@@ -108,29 +120,35 @@ func runPionDTLS13Exchange(
 	}
 	_, _ = fmt.Fprintf(stdout, "Pion %s application record %q\n", applicationRecordDescription, received)
 
-	pionPayload := []byte(pionApplicationMessage)
-	written, err := connection.Write(pionPayload)
-	if err != nil {
-		return fmt.Errorf("write Pion application record to BoringSSL: %w", err)
+	exchangeCount := 1
+	if keyUpdate {
+		exchangeCount++
 	}
-	if written != len(pionPayload) {
-		return fmt.Errorf("write Pion application record to BoringSSL: %w", io.ErrShortWrite)
-	}
+	for range exchangeCount {
+		pionPayload := []byte(pionApplicationMessage)
+		written, err := connection.Write(pionPayload)
+		if err != nil {
+			return fmt.Errorf("write Pion application record to BoringSSL: %w", err)
+		}
+		if written != len(pionPayload) {
+			return fmt.Errorf("write Pion application record to BoringSSL: %w", io.ErrShortWrite)
+		}
 
-	echoed := make([]byte, len(pionPayload))
-	if _, err = io.ReadFull(connection, echoed); err != nil {
-		return fmt.Errorf("read BoringSSL echo of Pion application record: %w", err)
+		echoed := make([]byte, len(pionPayload))
+		if _, err = io.ReadFull(connection, echoed); err != nil {
+			return fmt.Errorf("read BoringSSL echo of Pion application record: %w", err)
+		}
+		for index := range pionPayload {
+			pionPayload[index] ^= 0xff
+		}
+		if !bytes.Equal(echoed, pionPayload) {
+			return fmt.Errorf("unexpected BoringSSL echo: got %x, want %x", echoed, pionPayload) //nolint:err113
+		}
+		_, _ = fmt.Fprintln(stdout, "BoringSSL received and echoed Pion application record")
 	}
-	for index := range pionPayload {
-		pionPayload[index] ^= 0xff
-	}
-	if !bytes.Equal(echoed, pionPayload) {
-		return fmt.Errorf("unexpected BoringSSL echo: got %x, want %x", echoed, pionPayload) //nolint:err113
-	}
-	_, _ = fmt.Fprintln(stdout, "BoringSSL received and echoed Pion application record")
 
 	connectionClosed = true
-	if err = connection.Close(); err != nil {
+	if err := connection.Close(); err != nil {
 		return fmt.Errorf("close Pion DTLS connection: %w", err)
 	}
 

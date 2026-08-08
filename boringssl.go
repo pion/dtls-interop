@@ -30,8 +30,10 @@ const (
 	maxPacketedBIODatagramSize  = 1<<16 - 1
 	boringSSLX25519CurveGroupID = 29
 
-	boringSSL13MessageTrace       = "read hs 1\nwrite hs 2\nwrite hs 8\nwrite hs 11\nwrite hs 15\nwrite hs 20\nread hs 20\nwrite ack\nread alert 1 0\n"        // nolint:lll
-	boringSSL13ClientMessageTrace = "write hs 1\nread hs 2\nread hs 8\nread hs 11\nread hs 15\nread hs 20\nwrite hs 20\nread ack\nread hs 4\nread alert 1 0\n" // nolint:lll
+	boringSSL13MessageTrace                = "read hs 1\nwrite hs 2\nwrite hs 8\nwrite hs 11\nwrite hs 15\nwrite hs 20\nread hs 20\nwrite ack\nread alert 1 0\n"                                                      // nolint:lll
+	boringSSL13ClientMessageTrace          = "write hs 1\nread hs 2\nread hs 8\nread hs 11\nread hs 15\nread hs 20\nwrite hs 20\nread ack\nread hs 4\nread alert 1 0\n"                                               // nolint:lll
+	boringSSL13KeyUpdateMessageTrace       = "read hs 1\nwrite hs 2\nwrite hs 8\nwrite hs 11\nwrite hs 15\nwrite hs 20\nread hs 20\nwrite ack\nwrite hs 24\nread ack\nwrite hs 24\nread ack\nread alert 1 0\n"        // nolint:lll
+	boringSSL13KeyUpdateClientMessageTrace = "write hs 1\nread hs 2\nread hs 8\nread hs 11\nread hs 15\nread hs 20\nwrite hs 20\nread ack\nread hs 4\nwrite hs 24\nread ack\nwrite hs 24\nread ack\nread alert 1 0\n" // nolint:lll
 )
 
 var (
@@ -56,6 +58,10 @@ type boringSSLCredentials struct {
 	directory       string
 	certificatePath string
 	privateKeyPath  string
+}
+
+type boringSSLProbeOptions struct {
+	keyUpdate bool
 }
 
 type shimProcess struct {
@@ -85,6 +91,22 @@ func probeBoringSSL13PionClient(
 	stdout io.Writer,
 	commandContext commandContextFunc,
 ) error {
+	return probeBoringSSL13PionClientWithOptions(
+		ctx,
+		shimPath,
+		stdout,
+		commandContext,
+		boringSSLProbeOptions{},
+	)
+}
+
+func probeBoringSSL13PionClientWithOptions(
+	ctx context.Context,
+	shimPath string,
+	stdout io.Writer,
+	commandContext commandContextFunc,
+	options boringSSLProbeOptions,
+) error {
 	if shimPath == "" {
 		return errEmptyShimPath
 	}
@@ -107,7 +129,14 @@ func probeBoringSSL13PionClient(
 		return fmt.Errorf("%w: %q", errUnexpectedListener, listener.Addr())
 	}
 
-	process, err := startBoringSSLShim(ctx, shimPath, tcpAddress.Port, credentials, commandContext)
+	process, err := startBoringSSLShim(
+		ctx,
+		shimPath,
+		tcpAddress.Port,
+		credentials,
+		options,
+		commandContext,
+	)
 	if err != nil {
 		return err
 	}
@@ -126,7 +155,7 @@ func probeBoringSSL13PionClient(
 	_, _ = fmt.Fprintln(stdout, "BoringSSL server shim TCP bootstrap connected")
 
 	packetedConnection := &packetedConn{Conn: connection}
-	if err = runPionDTLS13Client(ctx, packetedConnection, stdout); err != nil {
+	if err = runPionDTLS13Client(ctx, packetedConnection, stdout, options.keyUpdate); err != nil {
 		process.stop()
 
 		return process.outputError(err)
@@ -145,6 +174,22 @@ func probeBoringSSL13PionServer(
 	stdout io.Writer,
 	commandContext commandContextFunc,
 ) error {
+	return probeBoringSSL13PionServerWithOptions(
+		ctx,
+		shimPath,
+		stdout,
+		commandContext,
+		boringSSLProbeOptions{},
+	)
+}
+
+func probeBoringSSL13PionServerWithOptions(
+	ctx context.Context,
+	shimPath string,
+	stdout io.Writer,
+	commandContext commandContextFunc,
+	options boringSSLProbeOptions,
+) error {
 	if shimPath == "" {
 		return errEmptyShimPath
 	}
@@ -161,7 +206,7 @@ func probeBoringSSL13PionServer(
 		return fmt.Errorf("%w: %q", errUnexpectedListener, listener.Addr())
 	}
 
-	process, err := startBoringSSLClientShim(ctx, shimPath, tcpAddress.Port, commandContext)
+	process, err := startBoringSSLClientShim(ctx, shimPath, tcpAddress.Port, options, commandContext)
 	if err != nil {
 		return err
 	}
@@ -179,7 +224,7 @@ func probeBoringSSL13PionServer(
 	_, _ = fmt.Fprintln(stdout, "BoringSSL client shim TCP bootstrap connected")
 
 	packetedConnection := &packetedConn{Conn: connection}
-	if err = runPionDTLS13Server(ctx, packetedConnection, stdout); err != nil {
+	if err = runPionDTLS13Server(ctx, packetedConnection, stdout, options.keyUpdate); err != nil {
 		process.stop()
 
 		return process.outputError(err)
@@ -197,6 +242,7 @@ func startBoringSSLShim(
 	shimPath string,
 	port int,
 	credentials *boringSSLCredentials,
+	options boringSSLProbeOptions,
 	commandContext commandContextFunc,
 ) (*shimProcess, error) {
 	childCtx, cancelChild := context.WithCancel(ctx)
@@ -204,14 +250,11 @@ func startBoringSSLShim(
 		cancel:   cancelChild,
 		waitDone: make(chan struct{}),
 	}
-	command := commandContext(
-		childCtx,
-		shimPath,
+	arguments := []string{
 		"-port", strconv.Itoa(port),
 		"-shim-id", strconv.FormatUint(shimID, 10),
 		"-dtls",
 		"-server",
-		"-expect-msg-callback", boringSSL13MessageTrace,
 		"-min-version", strconv.Itoa(dtls13Version),
 		"-max-version", strconv.Itoa(dtls13Version),
 		"-curves", strconv.Itoa(boringSSLX25519CurveGroupID),
@@ -219,7 +262,14 @@ func startBoringSSLShim(
 		"-key-file", credentials.privateKeyPath,
 		"-no-ticket",
 		"-shim-writes-first",
-	)
+	}
+	messageTrace := boringSSL13MessageTrace
+	if options.keyUpdate {
+		arguments = append(arguments, "-key-update")
+		messageTrace = boringSSL13KeyUpdateMessageTrace
+	}
+	arguments = append(arguments, "-expect-msg-callback", messageTrace)
+	command := commandContext(childCtx, shimPath, arguments...)
 	command.Stdout = &process.stdout
 	command.Stderr = &process.stderr
 
@@ -241,6 +291,7 @@ func startBoringSSLClientShim(
 	ctx context.Context,
 	shimPath string,
 	port int,
+	options boringSSLProbeOptions,
 	commandContext commandContextFunc,
 ) (*shimProcess, error) {
 	childCtx, cancelChild := context.WithCancel(ctx)
@@ -248,19 +299,23 @@ func startBoringSSLClientShim(
 		cancel:   cancelChild,
 		waitDone: make(chan struct{}),
 	}
-	command := commandContext(
-		childCtx,
-		shimPath,
+	arguments := []string{
 		"-port", strconv.Itoa(port),
 		"-shim-id", strconv.FormatUint(shimID, 10),
 		"-dtls",
-		"-expect-msg-callback", boringSSL13ClientMessageTrace,
 		"-min-version", strconv.Itoa(dtls13Version),
 		"-max-version", strconv.Itoa(dtls13Version),
 		"-curves", strconv.Itoa(boringSSLX25519CurveGroupID),
 		"-no-ticket",
 		"-shim-writes-first",
-	)
+	}
+	messageTrace := boringSSL13ClientMessageTrace
+	if options.keyUpdate {
+		arguments = append(arguments, "-key-update")
+		messageTrace = boringSSL13KeyUpdateClientMessageTrace
+	}
+	arguments = append(arguments, "-expect-msg-callback", messageTrace)
+	command := commandContext(childCtx, shimPath, arguments...)
 	command.Stdout = &process.stdout
 	command.Stderr = &process.stderr
 
