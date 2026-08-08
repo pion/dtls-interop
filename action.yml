@@ -21,6 +21,12 @@ runs:
       with:
         name: devenv
 
+    - name: Configure build cache
+      uses: determinatesystems/magic-nix-cache-action@v14
+      with:
+        use-gha-cache: enabled
+        use-flakehub: disabled
+
     - name: Install Devenv
       shell: bash
       # Pin until https://github.com/cachix/devenv/issues/3064 is fixed.
