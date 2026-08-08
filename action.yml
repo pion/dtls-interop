@@ -16,13 +16,16 @@ runs:
     - name: Install Nix
       uses: cachix/install-nix-action@v31
 
-    - name: Configure build cache
-      uses: determinatesystems/magic-nix-cache-action@v14
-
     - name: Configure the Devenv binary cache
       uses: cachix/cachix-action@v17
       with:
         name: devenv
+
+    - name: Configure build cache
+      uses: determinatesystems/magic-nix-cache-action@v14
+      with:
+        use-gha-cache: enabled
+        use-flakehub: disabled
 
     - name: Install Devenv
       shell: bash
