@@ -4,8 +4,8 @@
 version: '3'
 
 tasks:
-  interop:boringssl13:
-    desc: Run a BoringSSL-to-Pion DTLS 1.3 handshake and application record
+  interop:
+    desc: Run a Pion/dtls interop test
     silent: true
     env:
       PION_DTLS_SOURCE: '{{.CLI_ARGS}}'
