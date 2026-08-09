@@ -4,10 +4,12 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"io"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -50,15 +52,60 @@ func TestPacketedConnWrite(t *testing.T) {
 	result := <-writeDone
 	require.NoError(t, result.err)
 	require.Equal(t, len(payload), result.written)
+	require.NoError(t, connection.waitForWriteSizeAfter(context.Background(), 0, len(payload)))
+}
+
+func TestWaitForPionKeyUpdateWriteReturnsEarlyError(t *testing.T) {
+	expectedErr := io.ErrUnexpectedEOF
+	result := make(chan error, 1)
+	result <- expectedErr
+	connection := &packetedConn{writeEvent: make(chan struct{}, 1)}
+
+	completed, err := waitForPionKeyUpdateWrite(context.Background(), connection, 1, result)
+	require.True(t, completed)
+	require.ErrorIs(t, err, expectedErr)
+}
+
+func TestPacketedConnAdvanceClock(t *testing.T) {
+	connection, peer := newPacketedPipe(t)
+	payload := []byte("datagram after timeout")
+	type readResult struct {
+		read int
+		err  error
+	}
+	readDone := make(chan readResult, 1)
+	received := make([]byte, len(payload))
+	go func() {
+		read, err := connection.Read(received)
+		readDone <- readResult{read: read, err: err}
+	}()
+
+	advanceDone := make(chan error, 1)
+	go func() {
+		advanceDone <- connection.advanceClock(context.Background(), time.Second)
+	}()
+
+	var timeoutFrame [packetedBIOTimeoutFrameSize]byte
+	_, err := io.ReadFull(peer, timeoutFrame[:])
+	require.NoError(t, err)
+	require.Equal(t, packetedBIOTimeoutOpcode, timeoutFrame[0])
+	require.Equal(t, uint64(time.Second), binary.BigEndian.Uint64(timeoutFrame[1:]))
+
+	response := append([]byte{packetedBIOTimeoutACKOpcode}, makePacketedBIOFrame(payload)...)
+	_, err = peer.Write(response)
+	require.NoError(t, err)
+	require.NoError(t, <-advanceDone)
+	result := <-readDone
+	require.NoError(t, result.err)
+	require.Equal(t, len(payload), result.read)
+	require.Equal(t, payload, received)
 }
 
 func TestPacketedConnRejectsUnexpectedOpcode(t *testing.T) {
 	connection, peer := newPacketedPipe(t)
-	frame := makePacketedBIOFrame(nil)
-	frame[0] = 'X'
 	writeDone := make(chan error, 1)
 	go func() {
-		_, err := peer.Write(frame)
+		_, err := peer.Write([]byte{'X'})
 		writeDone <- err
 	}()
 
@@ -100,7 +147,7 @@ func newPacketedPipe(t *testing.T) (*packetedConn, net.Conn) {
 		require.NoError(t, peer.Close())
 	})
 
-	return &packetedConn{Conn: local}, peer
+	return newPacketedConn(local), peer
 }
 
 func makePacketedBIOFrame(payload []byte) []byte {

@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 )
@@ -26,14 +28,17 @@ const (
 	dtls13Version               = 0xfefc
 	shimID                      = uint64(1)
 	packetedBIOOpcode           = byte('P')
+	packetedBIOTimeoutOpcode    = byte('T')
+	packetedBIOTimeoutACKOpcode = byte('t')
 	packetedBIOHeaderSize       = 5
+	packetedBIOTimeoutFrameSize = 9
 	maxPacketedBIODatagramSize  = 1<<16 - 1
 	boringSSLX25519CurveGroupID = 29
 
-	boringSSL13MessageTrace                = "read hs 1\nwrite hs 2\nwrite hs 8\nwrite hs 11\nwrite hs 15\nwrite hs 20\nread hs 20\nwrite ack\nread alert 1 0\n"                                                      // nolint:lll
-	boringSSL13ClientMessageTrace          = "write hs 1\nread hs 2\nread hs 8\nread hs 11\nread hs 15\nread hs 20\nwrite hs 20\nread ack\nread hs 4\nread alert 1 0\n"                                               // nolint:lll
-	boringSSL13KeyUpdateMessageTrace       = "read hs 1\nwrite hs 2\nwrite hs 8\nwrite hs 11\nwrite hs 15\nwrite hs 20\nread hs 20\nwrite ack\nwrite hs 24\nread ack\nwrite hs 24\nread ack\nread alert 1 0\n"        // nolint:lll
-	boringSSL13KeyUpdateClientMessageTrace = "write hs 1\nread hs 2\nread hs 8\nread hs 11\nread hs 15\nread hs 20\nwrite hs 20\nread ack\nread hs 4\nwrite hs 24\nread ack\nwrite hs 24\nread ack\nread alert 1 0\n" // nolint:lll
+	boringSSL13MessageTrace                    = "read hs 1\nwrite hs 2\nwrite hs 8\nwrite hs 11\nwrite hs 15\nwrite hs 20\nread hs 20\nwrite ack\nread alert 1 0\n"                               // nolint:lll
+	boringSSL13ClientMessageTrace              = "write hs 1\nread hs 2\nread hs 8\nread hs 11\nread hs 15\nread hs 20\nwrite hs 20\nread ack\nread hs 4\nread alert 1 0\n"                        // nolint:lll
+	boringSSL13PeerKeyUpdateMessageTrace       = "read hs 1\nwrite hs 2\nwrite hs 8\nwrite hs 11\nwrite hs 15\nwrite hs 20\nread hs 20\nwrite ack\nwrite hs 24\nread ack\nread alert 1 0\n"        // nolint:lll
+	boringSSL13PeerKeyUpdateClientMessageTrace = "write hs 1\nread hs 2\nread hs 8\nread hs 11\nread hs 15\nread hs 20\nwrite hs 20\nread ack\nread hs 4\nwrite hs 24\nread ack\nread alert 1 0\n" // nolint:lll
 )
 
 var (
@@ -52,6 +57,15 @@ type packetedConn struct {
 
 	readMutex  sync.Mutex
 	writeMutex sync.Mutex
+	timeoutACK chan struct{}
+	writeCount atomic.Uint64
+	writeEvent chan struct{}
+	writes     []packetedWrite
+}
+
+type packetedWrite struct {
+	number uint64
+	size   int
 }
 
 type boringSSLCredentials struct {
@@ -61,7 +75,8 @@ type boringSSLCredentials struct {
 }
 
 type boringSSLProbeOptions struct {
-	keyUpdate bool
+	boringSSLKeyUpdate bool
+	pionKeyUpdate      pionKeyUpdateFunc
 }
 
 type shimProcess struct {
@@ -154,8 +169,8 @@ func probeBoringSSL13PionClientWithOptions(
 	}
 	_, _ = fmt.Fprintln(stdout, "BoringSSL server shim TCP bootstrap connected")
 
-	packetedConnection := &packetedConn{Conn: connection}
-	if err = runPionDTLS13Client(ctx, packetedConnection, stdout, options.keyUpdate); err != nil {
+	packetedConnection := newPacketedConn(connection)
+	if err = runPionDTLS13Client(ctx, packetedConnection, stdout, options); err != nil {
 		process.stop()
 
 		return process.outputError(err)
@@ -223,8 +238,8 @@ func probeBoringSSL13PionServerWithOptions(
 	}
 	_, _ = fmt.Fprintln(stdout, "BoringSSL client shim TCP bootstrap connected")
 
-	packetedConnection := &packetedConn{Conn: connection}
-	if err = runPionDTLS13Server(ctx, packetedConnection, stdout, options.keyUpdate); err != nil {
+	packetedConnection := newPacketedConn(connection)
+	if err = runPionDTLS13Server(ctx, packetedConnection, stdout, options); err != nil {
 		process.stop()
 
 		return process.outputError(err)
@@ -264,11 +279,16 @@ func startBoringSSLShim(
 		"-shim-writes-first",
 	}
 	messageTrace := boringSSL13MessageTrace
-	if options.keyUpdate {
+	if options.boringSSLKeyUpdate {
 		arguments = append(arguments, "-key-update")
-		messageTrace = boringSSL13KeyUpdateMessageTrace
+		messageTrace = boringSSL13PeerKeyUpdateMessageTrace
+	} else if options.pionKeyUpdate != nil {
+		arguments = append(arguments, "-async")
+		messageTrace = ""
 	}
-	arguments = append(arguments, "-expect-msg-callback", messageTrace)
+	if messageTrace != "" {
+		arguments = append(arguments, "-expect-msg-callback", messageTrace)
+	}
 	command := commandContext(childCtx, shimPath, arguments...)
 	command.Stdout = &process.stdout
 	command.Stderr = &process.stderr
@@ -310,11 +330,16 @@ func startBoringSSLClientShim(
 		"-shim-writes-first",
 	}
 	messageTrace := boringSSL13ClientMessageTrace
-	if options.keyUpdate {
+	if options.boringSSLKeyUpdate {
 		arguments = append(arguments, "-key-update")
-		messageTrace = boringSSL13KeyUpdateClientMessageTrace
+		messageTrace = boringSSL13PeerKeyUpdateClientMessageTrace
+	} else if options.pionKeyUpdate != nil {
+		arguments = append(arguments, "-async")
+		messageTrace = ""
 	}
-	arguments = append(arguments, "-expect-msg-callback", messageTrace)
+	if messageTrace != "" {
+		arguments = append(arguments, "-expect-msg-callback", messageTrace)
+	}
 	command := commandContext(childCtx, shimPath, arguments...)
 	command.Stdout = &process.stdout
 	command.Stderr = &process.stderr
@@ -438,19 +463,45 @@ func (credentials *boringSSLCredentials) remove() {
 	_ = os.RemoveAll(credentials.directory)
 }
 
+func newPacketedConn(connection net.Conn) *packetedConn {
+	return &packetedConn{
+		Conn:       connection,
+		timeoutACK: make(chan struct{}, 1),
+		writeEvent: make(chan struct{}, 1),
+	}
+}
+
 func (connection *packetedConn) Read(payload []byte) (int, error) {
 	connection.readMutex.Lock()
 	defer connection.readMutex.Unlock()
 
-	var header [packetedBIOHeaderSize]byte
-	if _, err := io.ReadFull(connection.Conn, header[:]); err != nil {
-		return 0, fmt.Errorf("read BoringSSL packeted BIO header: %w", err)
-	}
-	if header[0] != packetedBIOOpcode {
-		return 0, fmt.Errorf("%w: got %q", errUnexpectedPacketedBIOOpcode, header[0])
-	}
+	for {
+		var opcode [1]byte
+		if _, err := io.ReadFull(connection.Conn, opcode[:]); err != nil {
+			return 0, fmt.Errorf("read BoringSSL packeted BIO opcode: %w", err)
+		}
+		switch opcode[0] {
+		case packetedBIOTimeoutACKOpcode:
+			select {
+			case connection.timeoutACK <- struct{}{}:
+			default:
+			}
 
-	encodedSize := binary.BigEndian.Uint32(header[1:])
+			continue
+		case packetedBIOOpcode:
+			return connection.readPacketedBIODatagram(payload)
+		default:
+			return 0, fmt.Errorf("%w: got %q", errUnexpectedPacketedBIOOpcode, opcode[0])
+		}
+	}
+}
+
+func (connection *packetedConn) readPacketedBIODatagram(payload []byte) (int, error) {
+	var encodedSizeRaw [4]byte
+	if _, err := io.ReadFull(connection.Conn, encodedSizeRaw[:]); err != nil {
+		return 0, fmt.Errorf("read BoringSSL packeted BIO size: %w", err)
+	}
+	encodedSize := binary.BigEndian.Uint32(encodedSizeRaw[:])
 	if encodedSize > maxPacketedBIODatagramSize {
 		return 0, fmt.Errorf("%w: got %d bytes", errPacketedBIODatagramTooLarge, encodedSize)
 	}
@@ -493,8 +544,68 @@ func (connection *packetedConn) Write(payload []byte) (int, error) {
 	if written != len(frame) {
 		return 0, fmt.Errorf("write BoringSSL packeted BIO datagram: %w", io.ErrShortWrite)
 	}
+	writeNumber := connection.writeCount.Add(1)
+	connection.writes = append(connection.writes, packetedWrite{number: writeNumber, size: len(payload)})
+	select {
+	case connection.writeEvent <- struct{}{}:
+	default:
+	}
 
 	return len(payload), nil
+}
+
+func (connection *packetedConn) waitForWriteSizeAfter(
+	ctx context.Context,
+	after uint64,
+	size int,
+) error {
+	for {
+		if connection.hasWriteSizeAfter(after, size) {
+			return nil
+		}
+
+		select {
+		case <-connection.writeEvent:
+		case <-ctx.Done():
+			return fmt.Errorf("wait for Pion packeted BIO write of %d bytes: %w", size, ctx.Err())
+		}
+	}
+}
+
+func (connection *packetedConn) hasWriteSizeAfter(after uint64, size int) bool {
+	connection.writeMutex.Lock()
+	defer connection.writeMutex.Unlock()
+
+	for _, write := range connection.writes {
+		if write.number > after && write.size == size {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (connection *packetedConn) advanceClock(ctx context.Context, duration time.Duration) error {
+	var frame [packetedBIOTimeoutFrameSize]byte
+	frame[0] = packetedBIOTimeoutOpcode
+	binary.BigEndian.PutUint64(frame[1:], uint64(duration)) //nolint:gosec // caller supplies a positive duration
+
+	connection.writeMutex.Lock()
+	written, err := connection.Conn.Write(frame[:])
+	connection.writeMutex.Unlock()
+	if err != nil {
+		return fmt.Errorf("advance BoringSSL packeted BIO clock: %w", err)
+	}
+	if written != len(frame) {
+		return fmt.Errorf("advance BoringSSL packeted BIO clock: %w", io.ErrShortWrite)
+	}
+
+	select {
+	case <-connection.timeoutACK:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("advance BoringSSL packeted BIO clock: %w", ctx.Err())
+	}
 }
 
 func (process *shimProcess) wait(ctx context.Context) error {
