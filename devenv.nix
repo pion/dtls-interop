@@ -7,6 +7,7 @@ let
   openssl3 = pkgs.callPackage ./nix/openssl-3.nix { };
   openssl4 = pkgs.callPackage ./nix/openssl-4.nix { };
   boringssl = pkgs.callPackage ./nix/boringssl.nix { };
+  wolfssl = pkgs.callPackage ./nix/wolfssl.nix { };
 in
 {
   packages = [
@@ -24,6 +25,7 @@ in
     (pkgs.writeShellScriptBin "bssl-shim" ''
       exec ${boringssl}/bin/bssl_shim "$@"
     '')
+    wolfssl
   ];
 
   env = {
