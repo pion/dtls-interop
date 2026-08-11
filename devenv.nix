@@ -32,6 +32,8 @@ in
     DTLS_INTEROP_OPENSSL3_BIN = "${openssl3}/bin/openssl";
     DTLS_INTEROP_OPENSSL4_BIN = "${openssl4}/bin/openssl";
     DTLS_INTEROP_BSSL_SHIM_BIN = "${boringssl}/bin/bssl_shim";
+    DTLS_INTEROP_WOLFSSL_SERVER_BIN = "${wolfssl}/bin/wolfssl-dtls13-server";
+    DTLS_INTEROP_WOLFSSL_CLIENT_BIN = "${wolfssl}/bin/wolfssl-dtls13-client";
   };
 
   enterTest = ''
