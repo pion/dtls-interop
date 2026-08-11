@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"io"
 	"net"
 	"os/exec"
@@ -24,6 +25,14 @@ import (
 
 const wolfSSLApplicationMessage = "hello wolfssl!"
 
+type wolfSSLCIDTestCase struct {
+	name              string
+	pionCIDEnabled    bool
+	pionReceiveCID    []byte
+	wolfSSLCIDEnabled bool
+	wolfSSLReceiveCID string
+}
+
 type wolfSSLProcess struct {
 	cancel   context.CancelFunc
 	waitDone chan struct{}
@@ -38,34 +47,86 @@ type wolfSSLAcceptResult struct {
 }
 
 func TestWolfSSLDTLS13Interop(t *testing.T) {
-	t.Run("PionClient_WolfSSLServer", testPionClientWolfSSLServer)
-	t.Run("PionServer_WolfSSLClient", testPionServerWolfSSLClient)
+	testCases := []wolfSSLCIDTestCase{
+		{name: "NoCID"},
+		{
+			name:              "ZeroLengthCID",
+			pionCIDEnabled:    true,
+			wolfSSLCIDEnabled: true,
+		},
+		{
+			name:              "NonZeroCID",
+			pionCIDEnabled:    true,
+			pionReceiveCID:    []byte("pion-cid"),
+			wolfSSLCIDEnabled: true,
+			wolfSSLReceiveCID: "wolf-id",
+		},
+		{
+			name:              "PionZeroLength_WolfSSLNonZero",
+			pionCIDEnabled:    true,
+			wolfSSLCIDEnabled: true,
+			wolfSSLReceiveCID: "wolf-id",
+		},
+		{
+			name:              "PionNonZero_WolfSSLZeroLength",
+			pionCIDEnabled:    true,
+			pionReceiveCID:    []byte("pion-cid"),
+			wolfSSLCIDEnabled: true,
+		},
+	}
+
+	t.Run("PionClient_WolfSSLServer", func(t *testing.T) {
+		for _, testCase := range testCases {
+			t.Run(testCase.name, func(t *testing.T) {
+				testPionClientWolfSSLServer(t, testCase)
+			})
+		}
+	})
+	t.Run("PionServer_WolfSSLClient", func(t *testing.T) {
+		for _, testCase := range testCases {
+			t.Run(testCase.name, func(t *testing.T) {
+				testPionServerWolfSSLClient(t, testCase)
+			})
+		}
+	})
 }
 
-func testPionClientWolfSSLServer(t *testing.T) {
+func testPionClientWolfSSLServer(t *testing.T, testCase wolfSSLCIDTestCase) {
+	t.Helper()
+
 	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
 	defer cancel()
 
 	serverAddress := reserveWolfSSLAddress(t)
-	process := startWolfSSLProcess(
-		t,
-		ctx,
-		environmentOrDefault("DTLS_INTEROP_WOLFSSL_SERVER_BIN", "wolfssl-dtls13-server"),
+	serverArguments := []string{
 		"-u",
 		"-v", "4",
 		"-p", strconv.Itoa(serverAddress.Port),
 		"-d",
 		"-e",
+	}
+	serverArguments = append(serverArguments, testCase.wolfSSLArguments()...)
+	process := startWolfSSLProcess(
+		t,
+		ctx,
+		environmentOrDefault("DTLS_INTEROP_WOLFSSL_SERVER_BIN", "wolfssl-dtls13-server"),
+		serverArguments...,
 	)
 
-	client, err := dtls.DialWithOptions(
-		"udp4",
-		serverAddress,
+	clientOptions := []dtls.ClientOption{
 		dtls.WithInsecureSkipVerify(true),
 		dtls.WithEllipticCurves(elliptic.P256),
 		dtls.WithCipherSuites(dtls.TLS_AES_128_GCM_SHA256),
 		dtls.WithMinVersion(protocol.Version1_3),
 		dtls.WithMaxVersion(protocol.Version1_3),
+	}
+	if cidOption := testCase.pionCIDOption(); cidOption != nil {
+		clientOptions = append(clientOptions, cidOption)
+	}
+	client, err := dtls.DialWithOptions(
+		"udp4",
+		serverAddress,
+		clientOptions...,
 	)
 	process.requireNoError(t, "dial wolfSSL DTLS 1.3 server", err)
 	t.Cleanup(func() { _ = client.Close() })
@@ -80,38 +141,51 @@ func testPionClientWolfSSLServer(t *testing.T) {
 
 	process.requireNoError(t, "close Pion DTLS connection", client.Close())
 	process.wait(t, ctx)
+	process.requireCIDNegotiation(t, testCase)
 }
 
-func testPionServerWolfSSLClient(t *testing.T) {
+func testPionServerWolfSSLClient(t *testing.T, testCase wolfSSLCIDTestCase) {
+	t.Helper()
+
 	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
 	defer cancel()
 
 	certificate, err := selfsign.GenerateSelfSigned()
 	require.NoError(t, err)
-	listener, err := dtls.ListenWithOptions(
-		"udp4",
-		&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)},
+	serverOptions := []dtls.ServerOption{
 		dtls.WithCertificates(certificate),
 		dtls.WithEllipticCurves(elliptic.P256),
 		dtls.WithCipherSuites(dtls.TLS_AES_128_GCM_SHA256),
 		dtls.WithMinVersion(protocol.Version1_3),
 		dtls.WithMaxVersion(protocol.Version1_3),
+	}
+	if cidOption := testCase.pionCIDOption(); cidOption != nil {
+		serverOptions = append(serverOptions, cidOption)
+	}
+	listener, err := dtls.ListenWithOptions(
+		"udp4",
+		&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)},
+		serverOptions...,
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = listener.Close() })
 
 	address, ok := listener.Addr().(*net.UDPAddr)
 	require.Truef(t, ok, "unexpected Pion DTLS listener address type %T", listener.Addr())
-	process := startWolfSSLProcess(
-		t,
-		ctx,
-		environmentOrDefault("DTLS_INTEROP_WOLFSSL_CLIENT_BIN", "wolfssl-dtls13-client"),
+	clientArguments := []string{
 		"-h", "127.0.0.1",
 		"-p", strconv.Itoa(address.Port),
 		"-u",
 		"-v", "4",
 		"-d",
 		"-x",
+	}
+	clientArguments = append(clientArguments, testCase.wolfSSLArguments()...)
+	process := startWolfSSLProcess(
+		t,
+		ctx,
+		environmentOrDefault("DTLS_INTEROP_WOLFSSL_CLIENT_BIN", "wolfssl-dtls13-client"),
+		clientArguments...,
 	)
 
 	server := acceptWolfSSLConnection(t, ctx, listener, process)
@@ -125,7 +199,33 @@ func testPionServerWolfSSLClient(t *testing.T) {
 	t.Log("Pion received and echoed wolfSSL application data")
 
 	process.wait(t, ctx)
+	process.requireCIDNegotiation(t, testCase)
 	process.requireNoError(t, "close Pion DTLS connection", server.Close())
+}
+
+func (testCase wolfSSLCIDTestCase) pionCIDOption() dtls.Option {
+	if !testCase.pionCIDEnabled {
+		return nil
+	}
+
+	cid := bytes.Clone(testCase.pionReceiveCID)
+
+	return dtls.WithConnectionIDGenerator(func() []byte {
+		return bytes.Clone(cid)
+	})
+}
+
+func (testCase wolfSSLCIDTestCase) wolfSSLArguments() []string {
+	if !testCase.wolfSSLCIDEnabled {
+		return nil
+	}
+
+	arguments := []string{"--cid"}
+	if testCase.wolfSSLReceiveCID != "" {
+		arguments = append(arguments, testCase.wolfSSLReceiveCID)
+	}
+
+	return arguments
 }
 
 func startWolfSSLProcess(t *testing.T, ctx context.Context, path string, arguments ...string) *wolfSSLProcess {
@@ -242,6 +342,24 @@ func (process *wolfSSLProcess) wait(t *testing.T, ctx context.Context) {
 	case <-ctx.Done():
 		process.stop()
 		require.NoErrorf(t, ctx.Err(), "wait for wolfSSL process%s", process.output())
+	}
+}
+
+func (process *wolfSSLProcess) requireCIDNegotiation(t *testing.T, testCase wolfSSLCIDTestCase) {
+	t.Helper()
+
+	output := process.stdout.String()
+	if !testCase.pionCIDEnabled || !testCase.wolfSSLCIDEnabled {
+		require.NotContains(t, output, "CID extension was negotiated")
+
+		return
+	}
+
+	require.Contains(t, output, "CID extension was negotiated")
+	if len(testCase.pionReceiveCID) == 0 {
+		require.Contains(t, output, "other peer provided empty CID")
+	} else {
+		require.Contains(t, output, "Sending CID is "+hex.EncodeToString(testCase.pionReceiveCID))
 	}
 }
 
