@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/pion/dtls/v3"
@@ -384,4 +385,224 @@ func (process *wolfSSLProcess) output() string {
 	}
 
 	return " (" + strings.Join(details, "; ") + ")"
+}
+
+type wolfSSLRebindingProxy struct {
+	downstream *net.UDPConn
+	initial    *net.UDPConn
+	rebound    *net.UDPConn
+	target     *net.UDPAddr
+
+	rebind     chan struct{}
+	rebindOnce sync.Once
+	closed     chan struct{}
+	closeOnce  sync.Once
+	waitGroup  sync.WaitGroup
+
+	clientMutex sync.RWMutex
+	clientAddr  *net.UDPAddr
+	errorMutex  sync.Mutex
+	loopError   error
+}
+
+// TestWolfSSLDTLS13CIDRebinding verifies the peer-address update requirements
+// from RFC 9146 Section 6 using DTLS 1.3 unified-header CID records.
+// https://datatracker.ietf.org/doc/html/rfc9146#section-6
+func TestWolfSSLDTLS13CIDRebinding(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
+	defer cancel()
+
+	certificate, err := selfsign.GenerateSelfSigned()
+	require.NoError(t, err)
+	serverCID := []byte("pion-cid")
+	testCase := wolfSSLCIDTestCase{
+		name:              "NonZeroCIDRebinding",
+		pionCIDEnabled:    true,
+		pionReceiveCID:    serverCID,
+		wolfSSLCIDEnabled: true,
+		wolfSSLReceiveCID: "wolf-id",
+	}
+	listener, err := dtls.ListenWithOptions(
+		"udp4",
+		&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)},
+		dtls.WithCertificates(certificate),
+		dtls.WithEllipticCurves(elliptic.P256),
+		dtls.WithCipherSuites(dtls.TLS_AES_128_GCM_SHA256),
+		dtls.WithMinVersion(protocol.Version1_3),
+		dtls.WithMaxVersion(protocol.Version1_3),
+		testCase.pionCIDOption(),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+
+	serverAddress, ok := listener.Addr().(*net.UDPAddr)
+	require.Truef(t, ok, "unexpected Pion DTLS listener address type %T", listener.Addr())
+	proxy := newWolfSSLRebindingProxy(t, serverAddress)
+
+	proxyAddress := proxy.address()
+	clientArguments := []string{
+		"-h", "127.0.0.1",
+		"-p", strconv.Itoa(proxyAddress.Port),
+		"-u",
+		"-v", "4",
+		"-d",
+		"-x",
+	}
+	clientArguments = append(clientArguments, testCase.wolfSSLArguments()...)
+	process := startWolfSSLProcess(
+		t,
+		ctx,
+		environmentOrDefault("DTLS_INTEROP_WOLFSSL_CLIENT_BIN", "wolfssl-dtls13-client"),
+		clientArguments...,
+	)
+
+	server := acceptWolfSSLConnection(t, ctx, listener, process)
+	t.Cleanup(func() { _ = server.Close() })
+	setWolfSSLDeadline(t, ctx, server)
+	process.requireNoError(t, "complete Pion DTLS 1.3 server handshake", server.HandshakeContext(ctx))
+	proxy.rebindPath()
+
+	readWolfSSLMessage(t, process, server)
+	require.Equal(t, proxy.rebound.LocalAddr().String(), server.RemoteAddr().String())
+	writeWolfSSLMessage(t, process, server)
+
+	process.wait(t, ctx)
+	process.requireCIDNegotiation(t, testCase)
+	require.NoError(t, proxy.err())
+	process.requireNoError(t, "close Pion DTLS connection", server.Close())
+}
+
+func newWolfSSLRebindingProxy(t *testing.T, target *net.UDPAddr) *wolfSSLRebindingProxy {
+	t.Helper()
+
+	listen := func() *net.UDPConn {
+		connection, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		require.NoError(t, err)
+
+		return connection
+	}
+	proxy := &wolfSSLRebindingProxy{
+		downstream: listen(),
+		initial:    listen(),
+		rebound:    listen(),
+		target:     target,
+		rebind:     make(chan struct{}),
+		closed:     make(chan struct{}),
+	}
+	proxy.waitGroup.Add(3)
+	go proxy.forwardClientPackets()
+	go proxy.forwardServerPackets(proxy.initial)
+	go proxy.forwardServerPackets(proxy.rebound)
+	t.Cleanup(proxy.close)
+
+	return proxy
+}
+
+func (proxy *wolfSSLRebindingProxy) address() *net.UDPAddr {
+	address, _ := proxy.downstream.LocalAddr().(*net.UDPAddr)
+
+	return address
+}
+
+func (proxy *wolfSSLRebindingProxy) rebindPath() {
+	proxy.rebindOnce.Do(func() {
+		close(proxy.rebind)
+	})
+}
+
+func (proxy *wolfSSLRebindingProxy) forwardClientPackets() {
+	defer proxy.waitGroup.Done()
+
+	buffer := make([]byte, 64*1024)
+	for {
+		n, clientAddr, err := proxy.downstream.ReadFromUDP(buffer)
+		if err != nil {
+			proxy.setError(err)
+
+			return
+		}
+		proxy.setClientAddr(clientAddr)
+
+		upstream := proxy.initial
+		select {
+		case <-proxy.rebind:
+			upstream = proxy.rebound
+		default:
+		}
+		if _, err = upstream.WriteToUDP(buffer[:n], proxy.target); err != nil {
+			proxy.setError(err)
+
+			return
+		}
+	}
+}
+
+func (proxy *wolfSSLRebindingProxy) forwardServerPackets(upstream *net.UDPConn) {
+	defer proxy.waitGroup.Done()
+
+	buffer := make([]byte, 64*1024)
+	for {
+		n, _, err := upstream.ReadFromUDP(buffer)
+		if err != nil {
+			proxy.setError(err)
+
+			return
+		}
+		clientAddr := proxy.getClientAddr()
+		if clientAddr == nil {
+			continue
+		}
+		if _, err = proxy.downstream.WriteToUDP(buffer[:n], clientAddr); err != nil {
+			proxy.setError(err)
+
+			return
+		}
+	}
+}
+
+func (proxy *wolfSSLRebindingProxy) setClientAddr(address *net.UDPAddr) {
+	proxy.clientMutex.Lock()
+	defer proxy.clientMutex.Unlock()
+
+	cloned := *address
+	cloned.IP = append(net.IP(nil), address.IP...)
+	proxy.clientAddr = &cloned
+}
+
+func (proxy *wolfSSLRebindingProxy) getClientAddr() *net.UDPAddr {
+	proxy.clientMutex.RLock()
+	defer proxy.clientMutex.RUnlock()
+
+	return proxy.clientAddr
+}
+
+func (proxy *wolfSSLRebindingProxy) setError(err error) {
+	select {
+	case <-proxy.closed:
+		return
+	default:
+	}
+
+	proxy.errorMutex.Lock()
+	defer proxy.errorMutex.Unlock()
+	if proxy.loopError == nil {
+		proxy.loopError = err
+	}
+}
+
+func (proxy *wolfSSLRebindingProxy) err() error {
+	proxy.errorMutex.Lock()
+	defer proxy.errorMutex.Unlock()
+
+	return proxy.loopError
+}
+
+func (proxy *wolfSSLRebindingProxy) close() {
+	proxy.closeOnce.Do(func() {
+		close(proxy.closed)
+		_ = proxy.downstream.Close()
+		_ = proxy.initial.Close()
+		_ = proxy.rebound.Close()
+		proxy.waitGroup.Wait()
+	})
 }
