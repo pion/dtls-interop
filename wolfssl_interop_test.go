@@ -211,9 +211,9 @@ func (testCase wolfSSLCIDTestCase) pionCIDOption() dtls.Option {
 
 	cid := bytes.Clone(testCase.pionReceiveCID)
 
-	return dtls.WithConnectionIDGenerator(func() []byte {
+	return dtls.WithConnectionID(func() []byte {
 		return bytes.Clone(cid)
-	})
+	}, dtls.CIDPathMigrationUnsafe)
 }
 
 func (testCase wolfSSLCIDTestCase) wolfSSLArguments() []string {
