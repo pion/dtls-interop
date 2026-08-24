@@ -472,6 +472,65 @@ func TestWolfSSLDTLS13CIDRebinding(t *testing.T) {
 	process.requireNoError(t, "close Pion DTLS connection", server.Close())
 }
 
+// TestWolfSSLDTLS13CIDPolicyDiscard verifies that Pion keeps a negotiated-CID
+// connection alive when its peer sends a protected DTLS 1.3 record without a
+// CID.
+func TestWolfSSLDTLS13CIDPolicyDiscard(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
+	defer cancel()
+
+	serverCID := []byte("pion-cid")
+	testCase := wolfSSLCIDTestCase{
+		name:              "CIDlessProtectedRecord",
+		pionCIDEnabled:    true,
+		pionReceiveCID:    serverCID,
+		wolfSSLCIDEnabled: true,
+		wolfSSLReceiveCID: "wolf-id",
+	}
+	serverAddress := reserveWolfSSLAddress(t)
+	proxy := newWolfSSLRebindingProxy(t, serverAddress)
+	serverArguments := []string{
+		"-u",
+		"-v", "4",
+		"-p", strconv.Itoa(serverAddress.Port),
+		"-d",
+		"-e",
+	}
+	serverArguments = append(serverArguments, testCase.wolfSSLArguments()...)
+	process := startWolfSSLProcess(
+		t,
+		ctx,
+		environmentOrDefault("DTLS_INTEROP_WOLFSSL_SERVER_BIN", "wolfssl-dtls13-server"),
+		serverArguments...,
+	)
+
+	clientOptions := []dtls.ClientOption{
+		dtls.WithInsecureSkipVerify(true),
+		dtls.WithEllipticCurves(elliptic.P256),
+		dtls.WithCipherSuites(dtls.TLS_AES_128_GCM_SHA256),
+		dtls.WithMinVersion(protocol.Version1_3),
+		dtls.WithMaxVersion(protocol.Version1_3),
+		testCase.pionCIDOption(),
+	}
+	client, err := dtls.DialWithOptions("udp4", proxy.address(), clientOptions...)
+	process.requireNoError(t, "dial wolfSSL DTLS 1.3 server", err)
+	t.Cleanup(func() { _ = client.Close() })
+
+	setWolfSSLDeadline(t, ctx, client)
+	process.requireNoError(t, "complete Pion DTLS 1.3 client handshake", client.HandshakeContext(ctx))
+
+	proxy.injectToClient(t, cidlessDTLS13CiphertextRecord())
+
+	writeWolfSSLMessage(t, process, client)
+	readWolfSSLMessage(t, process, client)
+	t.Log("Pion discarded a CID-less protected record and continued the exchange")
+
+	process.requireNoError(t, "close Pion DTLS connection", client.Close())
+	process.wait(t, ctx)
+	process.requireCIDNegotiation(t, testCase)
+	require.NoError(t, proxy.err())
+}
+
 func newWolfSSLRebindingProxy(t *testing.T, target *net.UDPAddr) *wolfSSLRebindingProxy {
 	t.Helper()
 
@@ -502,6 +561,23 @@ func (proxy *wolfSSLRebindingProxy) address() *net.UDPAddr {
 	address, _ := proxy.downstream.LocalAddr().(*net.UDPAddr)
 
 	return address
+}
+
+func (proxy *wolfSSLRebindingProxy) injectToClient(t *testing.T, datagram []byte) {
+	t.Helper()
+
+	clientAddr := proxy.getClientAddr()
+	require.NotNil(t, clientAddr, "wolfSSL proxy has not received a client datagram")
+	_, err := proxy.downstream.WriteToUDP(datagram, clientAddr)
+	require.NoError(t, err, "inject CID-less protected record")
+}
+
+func cidlessDTLS13CiphertextRecord() []byte {
+	record := make([]byte, 5+16)
+	record[0] = 0b0010_1110
+	record[4] = 16
+
+	return record
 }
 
 func (proxy *wolfSSLRebindingProxy) rebindPath() {
