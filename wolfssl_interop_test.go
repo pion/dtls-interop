@@ -157,7 +157,7 @@ func testPionServerWolfSSLClient(t *testing.T, testCase wolfSSLCIDTestCase) {
 	serverOptions := []dtls.ServerOption{
 		dtls.WithCertificates(certificate),
 		dtls.WithEllipticCurves(elliptic.P256),
-		dtls.WithCipherSuites(cipherSuite.TLS_AES_128_GCM_SHA256),
+		dtls.WithCipherSuites(ciphersuite.TLS_AES_128_GCM_SHA256),
 		dtls.WithMinVersion(protocol.Version1_3),
 		dtls.WithMaxVersion(protocol.Version1_3),
 	}
