@@ -164,7 +164,7 @@ func testPionServerWolfSSLClient(t *testing.T, testCase wolfSSLCIDTestCase) {
 	if cidOption := testCase.pionCIDOption(); cidOption != nil {
 		serverOptions = append(serverOptions, cidOption)
 	}
-	listener, err := dtls.Listen(
+	listener, err := dtls.ListenAddr(
 		"udp4",
 		&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)},
 		serverOptions...,
@@ -423,7 +423,7 @@ func TestWolfSSLDTLS13CIDRebinding(t *testing.T) {
 		wolfSSLCIDEnabled: true,
 		wolfSSLReceiveCID: "wolf-id",
 	}
-	listener, err := dtls.Listen(
+	listener, err := dtls.ListenAddr(
 		"udp4",
 		&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)},
 		dtls.WithCertificates(certificate),
