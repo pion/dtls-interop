@@ -124,7 +124,7 @@ func testPionClientWolfSSLServer(t *testing.T, testCase wolfSSLCIDTestCase) {
 	if cidOption := testCase.pionCIDOption(); cidOption != nil {
 		clientOptions = append(clientOptions, cidOption)
 	}
-	client, err := dtls.DialWithOptions(
+	client, err := dtls.Dial(
 		"udp4",
 		serverAddress,
 		clientOptions...,
@@ -163,7 +163,7 @@ func testPionServerWolfSSLClient(t *testing.T, testCase wolfSSLCIDTestCase) {
 	if cidOption := testCase.pionCIDOption(); cidOption != nil {
 		serverOptions = append(serverOptions, cidOption)
 	}
-	listener, err := dtls.ListenWithOptions(
+	listener, err := dtls.Listen(
 		"udp4",
 		&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)},
 		serverOptions...,
@@ -422,7 +422,7 @@ func TestWolfSSLDTLS13CIDRebinding(t *testing.T) {
 		wolfSSLCIDEnabled: true,
 		wolfSSLReceiveCID: "wolf-id",
 	}
-	listener, err := dtls.ListenWithOptions(
+	listener, err := dtls.Listen(
 		"udp4",
 		&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)},
 		dtls.WithCertificates(certificate),
@@ -512,7 +512,7 @@ func TestWolfSSLDTLS13CIDPolicyDiscard(t *testing.T) {
 		dtls.WithMaxVersion(protocol.Version1_3),
 		testCase.pionCIDOption(),
 	}
-	client, err := dtls.DialWithOptions("udp4", proxy.address(), clientOptions...)
+	client, err := dtls.Dial("udp4", proxy.address(), clientOptions...)
 	process.requireNoError(t, "dial wolfSSL DTLS 1.3 server", err)
 	t.Cleanup(func() { _ = client.Close() })
 

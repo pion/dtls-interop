@@ -48,7 +48,7 @@ func runPionDTLS13Client(
 	stdout io.Writer,
 	options boringSSLProbeOptions,
 ) error {
-	client, err := dtls.ClientWithOptions(
+	client, err := dtls.Client(
 		dtlsnet.PacketConnFromConn(connection),
 		connection.RemoteAddr(),
 		dtls.WithInsecureSkipVerify(true),
@@ -84,7 +84,7 @@ func runPionDTLS13Server(
 		return fmt.Errorf("generate Pion DTLS 1.3 server certificate: %w", err)
 	}
 
-	server, err := dtls.ServerWithOptions(
+	server, err := dtls.Server(
 		dtlsnet.PacketConnFromConn(connection),
 		connection.RemoteAddr(),
 		dtls.WithCertificates(certificate),
