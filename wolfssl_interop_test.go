@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/pion/dtls/v3"
+	"github.com/pion/dtls/v3/pkg/crypto/ciphersuite"
 	"github.com/pion/dtls/v3/pkg/crypto/elliptic"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	"github.com/pion/dtls/v3/pkg/protocol"
@@ -117,7 +118,7 @@ func testPionClientWolfSSLServer(t *testing.T, testCase wolfSSLCIDTestCase) {
 	clientOptions := []dtls.ClientOption{
 		dtls.WithInsecureSkipVerify(true),
 		dtls.WithEllipticCurves(elliptic.P256),
-		dtls.WithCipherSuites(dtls.TLS_AES_128_GCM_SHA256),
+		dtls.WithCipherSuites(ciphersuite.TLS_AES_128_GCM_SHA256),
 		dtls.WithMinVersion(protocol.Version1_3),
 		dtls.WithMaxVersion(protocol.Version1_3),
 	}
@@ -156,7 +157,7 @@ func testPionServerWolfSSLClient(t *testing.T, testCase wolfSSLCIDTestCase) {
 	serverOptions := []dtls.ServerOption{
 		dtls.WithCertificates(certificate),
 		dtls.WithEllipticCurves(elliptic.P256),
-		dtls.WithCipherSuites(dtls.TLS_AES_128_GCM_SHA256),
+		dtls.WithCipherSuites(cipherSuite.TLS_AES_128_GCM_SHA256),
 		dtls.WithMinVersion(protocol.Version1_3),
 		dtls.WithMaxVersion(protocol.Version1_3),
 	}
@@ -427,7 +428,7 @@ func TestWolfSSLDTLS13CIDRebinding(t *testing.T) {
 		&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)},
 		dtls.WithCertificates(certificate),
 		dtls.WithEllipticCurves(elliptic.P256),
-		dtls.WithCipherSuites(dtls.TLS_AES_128_GCM_SHA256),
+		dtls.WithCipherSuites(ciphersuite.TLS_AES_128_GCM_SHA256),
 		dtls.WithMinVersion(protocol.Version1_3),
 		dtls.WithMaxVersion(protocol.Version1_3),
 		testCase.pionCIDOption(),
@@ -507,7 +508,7 @@ func TestWolfSSLDTLS13CIDPolicyDiscard(t *testing.T) {
 	clientOptions := []dtls.ClientOption{
 		dtls.WithInsecureSkipVerify(true),
 		dtls.WithEllipticCurves(elliptic.P256),
-		dtls.WithCipherSuites(dtls.TLS_AES_128_GCM_SHA256),
+		dtls.WithCipherSuites(ciphersuite.TLS_AES_128_GCM_SHA256),
 		dtls.WithMinVersion(protocol.Version1_3),
 		dtls.WithMaxVersion(protocol.Version1_3),
 		testCase.pionCIDOption(),
