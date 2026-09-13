@@ -24,10 +24,11 @@ func TestPacketedConnRead(t *testing.T) {
 	}()
 
 	received := make([]byte, len(payload))
-	read, err := connection.Read(received)
+	read, addr, err := connection.ReadFrom(received)
 	require.NoError(t, err)
 	require.Equal(t, len(payload), read)
 	require.Equal(t, payload, received)
+	require.Equal(t, peer.LocalAddr(), addr)
 	require.NoError(t, <-writeDone)
 }
 
@@ -40,7 +41,7 @@ func TestPacketedConnWrite(t *testing.T) {
 	}
 	writeDone := make(chan writeResult, 1)
 	go func() {
-		written, err := connection.Write(payload)
+		written, err := connection.WriteTo(payload, peer.LocalAddr())
 		writeDone <- writeResult{written: written, err: err}
 	}()
 
@@ -126,12 +127,12 @@ func TestPacketedConnShortBufferDrainsFrame(t *testing.T) {
 		writeDone <- err
 	}()
 
-	read, err := connection.Read(make([]byte, len(firstPayload)-1))
+	read, _, err := connection.ReadFrom(make([]byte, len(firstPayload)-1))
 	require.ErrorIs(t, err, io.ErrShortBuffer)
 	require.Zero(t, read)
 
 	received := make([]byte, len(secondPayload))
-	read, err = connection.Read(received)
+	read, _, err = connection.ReadFrom(received)
 	require.NoError(t, err)
 	require.Equal(t, len(secondPayload), read)
 	require.Equal(t, secondPayload, received)

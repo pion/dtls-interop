@@ -471,6 +471,16 @@ func newPacketedConn(connection net.Conn) *packetedConn {
 	}
 }
 
+func (connection *packetedConn) ReadFrom(payload []byte) (int, net.Addr, error) {
+	n, err := connection.Read(payload)
+
+	return n, connection.RemoteAddr(), err
+}
+
+func (connection *packetedConn) WriteTo(payload []byte, _ net.Addr) (int, error) {
+	return connection.Write(payload)
+}
+
 func (connection *packetedConn) Read(payload []byte) (int, error) {
 	connection.readMutex.Lock()
 	defer connection.readMutex.Unlock()

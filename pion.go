@@ -14,7 +14,6 @@ import (
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/elliptic"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
-	dtlsnet "github.com/pion/dtls/v3/pkg/net"
 	"github.com/pion/dtls/v3/pkg/protocol"
 )
 
@@ -49,7 +48,7 @@ func runPionDTLS13Client(
 	options boringSSLProbeOptions,
 ) error {
 	client, err := dtls.Client(
-		dtlsnet.PacketConnFromConn(connection),
+		connection,
 		connection.RemoteAddr(),
 		dtls.WithInsecureSkipVerify(true),
 		dtls.WithMinVersion(protocol.Version1_3),
@@ -85,7 +84,7 @@ func runPionDTLS13Server(
 	}
 
 	server, err := dtls.Server(
-		dtlsnet.PacketConnFromConn(connection),
+		connection,
 		connection.RemoteAddr(),
 		dtls.WithCertificates(certificate),
 		dtls.WithInsecureSkipVerify(true),
