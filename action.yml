@@ -26,7 +26,7 @@ runs:
         name: devenv
 
     - name: Configure build cache
-      uses: determinatesystems/magic-nix-cache-action@v14
+      uses: determinatesystems/magic-nix-cache-action@v15
       with:
         use-gha-cache: enabled
         use-flakehub: disabled
