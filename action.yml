@@ -9,6 +9,10 @@ inputs:
     description: Path to the pion/dtls checkout, relative to the caller workspace or absolute
     required: false
     default: .
+  runner:
+    description: Interop runner to execute (all, boringssl, or wolfssl)
+    required: false
+    default: all
 
 runs:
   using: composite
@@ -36,6 +40,7 @@ runs:
       shell: bash
       env:
         DTLS_PATH: ${{ inputs.dtls-path }}
+        INTEROP_RUNNER: ${{ inputs.runner }}
       run: |
         if [[ "$DTLS_PATH" != /* ]]; then
           DTLS_PATH="$GITHUB_WORKSPACE/$DTLS_PATH"
@@ -43,4 +48,4 @@ runs:
 
         cd "$GITHUB_ACTION_PATH"
 
-        devenv shell -- task interop -- "$DTLS_PATH"
+        devenv shell -- task interop "RUNNER=$INTEROP_RUNNER" -- "$DTLS_PATH"

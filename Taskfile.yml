@@ -9,13 +9,24 @@ tasks:
     silent: true
     env:
       PION_DTLS_SOURCE: '{{.CLI_ARGS}}'
+      DTLS_INTEROP_RUNNER: '{{.RUNNER | default "all"}}'
     cmds:
       - |
         set -eu
 
+        case "$DTLS_INTEROP_RUNNER" in
+          all) test_pattern='.' ;;
+          boringssl) test_pattern='^TestBoringSSL' ;;
+          wolfssl) test_pattern='^TestWolfSSL' ;;
+          *)
+            echo "unknown interop runner: $DTLS_INTEROP_RUNNER (expected all, boringssl, or wolfssl)" >&2
+            exit 1
+            ;;
+        esac
+
         source="$PION_DTLS_SOURCE"
         if [ -z "$source" ]; then
-          exec go test -tags=interop .
+          exec go test -tags=interop -run "$test_pattern" .
         fi
 
         if [ -d "$source" ]; then
@@ -46,7 +57,7 @@ tasks:
         )
 
         status=0
-        GOWORK="$workspace_directory/go.work" go test -tags=interop . || status=$?
+        GOWORK="$workspace_directory/go.work" go test -tags=interop -run "$test_pattern" . || status=$?
         rm -rf -- "$workspace_directory"
         exit "$status"
 

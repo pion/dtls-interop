@@ -17,10 +17,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  boringssl:
-    name: pion/dtls main interop
+  interop:
+    name: ${{ matrix.runner }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [boringssl, wolfssl]
     steps:
       - name: Check out DTLS interop
         uses: actions/checkout@v7
@@ -36,3 +40,4 @@ jobs:
         uses: ./
         with:
           dtls-path: dtls
+          runner: ${{ matrix.runner }}
