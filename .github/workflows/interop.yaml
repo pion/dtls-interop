@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [boringssl, wolfssl]
+        runner: [boringssl, wolfssl, openssl3]
     steps:
       - name: Check out DTLS interop
         uses: actions/checkout@v7
