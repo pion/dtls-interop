@@ -8,18 +8,25 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/pion/dtls/v3"
+	cryptosuite "github.com/pion/dtls/v3/pkg/crypto/ciphersuite"
+	"github.com/pion/dtls/v3/pkg/crypto/elliptic"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	"github.com/pion/dtls/v3/pkg/protocol"
 	"github.com/stretchr/testify/require"
@@ -38,8 +45,9 @@ type openSSLOutput struct {
 }
 
 type openSSLServerOptions struct {
-	webRTC bool
-	mtu    string
+	webRTC           bool
+	mtu              string
+	keyExchangeGroup elliptic.Curve
 }
 
 func TestOpenSSL3DTLS12Interop(t *testing.T) {
@@ -52,7 +60,9 @@ func TestOpenSSL3DTLS12Interop(t *testing.T) {
 	t.Log(strings.TrimSpace(string(version)))
 
 	t.Run("PionClient_OpenSSLServer", func(t *testing.T) {
-		testPionClientOpenSSLServer(t, path, openSSLServerOptions{})
+		runOpenSSLInteropTest(t, func(t *testing.T, group elliptic.Curve) {
+			testPionClientOpenSSLServer(t, path, openSSLServerOptions{keyExchangeGroup: group})
+		})
 	})
 	// Regression coverage for https://github.com/pion/dtls/pull/841
 	// OpenSSL's CertificateRequest may include signature algorithms Pion
@@ -71,8 +81,23 @@ func TestOpenSSL3DTLS12Interop(t *testing.T) {
 		}
 	})
 	t.Run("PionServer_OpenSSLClient", func(t *testing.T) {
-		testPionServerOpenSSLClient(t, path)
+		runOpenSSLInteropTest(t, func(t *testing.T, group elliptic.Curve) {
+			testPionServerOpenSSLClient(t, path, group)
+		})
 	})
+}
+
+func runOpenSSLInteropTest(t *testing.T, test func(*testing.T, elliptic.Curve)) {
+	t.Helper()
+
+	for _, group := range slices.Sorted(maps.Keys(elliptic.Curves())) {
+		t.Run(group.String(), func(t *testing.T) {
+			if group == elliptic.X25519MLKEM768 {
+				t.Skip("X25519MLKEM768 requires DTLS 1.3")
+			}
+			test(t, group)
+		})
+	}
 }
 
 func testPionClientOpenSSLServer(t *testing.T, path string, options openSSLServerOptions) {
@@ -80,8 +105,14 @@ func testPionClientOpenSSLServer(t *testing.T, path string, options openSSLServe
 
 	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
 	defer cancel()
-	certificate, err := selfsign.GenerateSelfSigned()
-	require.NoError(t, err)
+	var certificate tls.Certificate
+	if options.webRTC {
+		var err error
+		certificate, err = selfsign.GenerateSelfSigned()
+		require.NoError(t, err)
+	} else {
+		certificate = generateOpenSSLCertificate(t)
+	}
 	privateKey, err := x509.MarshalPKCS8PrivateKey(certificate.PrivateKey)
 	require.NoError(t, err)
 	directory := t.TempDir()
@@ -119,6 +150,15 @@ func testPionClientOpenSSLServer(t *testing.T, path string, options openSSLServe
 			dtls.WithCertificates(certificate),
 			dtls.WithSRTPProtectionProfiles(dtls.SRTP_AES128_CM_HMAC_SHA1_80),
 		)
+	} else {
+		arguments = append(arguments,
+			"-groups", options.keyExchangeGroup.String(),
+			"-cipher", "ECDHE-RSA-AES128-GCM-SHA256",
+		)
+		clientOptions = append(clientOptions,
+			dtls.WithEllipticCurves(options.keyExchangeGroup),
+			dtls.WithCipherSuites(cryptosuite.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256),
+		)
 	}
 	if options.mtu != "" {
 		arguments = append(arguments, "-mtu", options.mtu)
@@ -137,15 +177,16 @@ func testPionClientOpenSSLServer(t *testing.T, path string, options openSSLServe
 	}
 }
 
-func testPionServerOpenSSLClient(t *testing.T, path string) {
+func testPionServerOpenSSLClient(t *testing.T, path string, group elliptic.Curve) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
 	defer cancel()
-	certificate, err := selfsign.GenerateSelfSigned()
-	require.NoError(t, err)
+	certificate := generateOpenSSLCertificate(t)
 	listener, err := dtls.ListenAddr("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)},
 		dtls.WithCertificates(certificate),
+		dtls.WithEllipticCurves(group),
+		dtls.WithCipherSuites(cryptosuite.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256),
 		dtls.WithMinVersion(protocol.Version1_2),
 		dtls.WithMaxVersion(protocol.Version1_2),
 	)
@@ -153,6 +194,8 @@ func testPionServerOpenSSLClient(t *testing.T, path string) {
 	t.Cleanup(func() { _ = listener.Close() })
 	process := startOpenSSLProcess(t, ctx, path,
 		"s_client", "-dtls1_2", "-connect", listener.Addr().String(), "-quiet",
+		"-groups", group.String(),
+		"-cipher", "ECDHE-RSA-AES128-GCM-SHA256",
 	)
 	acceptCtx, cancelAccept := context.WithCancel(ctx)
 	defer cancelAccept()
@@ -169,6 +212,17 @@ func testPionServerOpenSSLClient(t *testing.T, path string) {
 	server, ok := connection.(*dtls.Conn)
 	require.True(t, ok)
 	exchangeOpenSSLData(t, ctx, server, process)
+}
+
+func generateOpenSSLCertificate(t *testing.T) tls.Certificate {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	certificate, err := selfsign.SelfSign(key)
+	require.NoError(t, err)
+
+	return certificate
 }
 
 func exchangeOpenSSLData(t *testing.T, ctx context.Context, connection *dtls.Conn, process *openSSLProcess) {
