@@ -37,6 +37,11 @@ type openSSLOutput struct {
 	changed chan struct{}
 }
 
+type openSSLServerOptions struct {
+	webRTC bool
+	mtu    string
+}
+
 func TestOpenSSL3DTLS12Interop(t *testing.T) {
 	path := environmentOrDefault("DTLS_INTEROP_OPENSSL3_BIN", "openssl-3")
 	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
@@ -47,14 +52,30 @@ func TestOpenSSL3DTLS12Interop(t *testing.T) {
 	t.Log(strings.TrimSpace(string(version)))
 
 	t.Run("PionClient_OpenSSLServer", func(t *testing.T) {
-		testPionClientOpenSSLServer(t, path)
+		testPionClientOpenSSLServer(t, path, openSSLServerOptions{})
+	})
+	// Regression coverage for https://github.com/pion/dtls/pull/841
+	// OpenSSL's CertificateRequest may include signature algorithms Pion
+	// does not recognize. These must not prevent the client handshake.
+	t.Run("PionClient_OpenSSLServer_WebRTC", func(t *testing.T) {
+		for _, test := range []struct {
+			name string
+			mtu  string
+		}{
+			{name: "DefaultMTU"},
+			{name: "Fragmented", mtu: "256"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				testPionClientOpenSSLServer(t, path, openSSLServerOptions{webRTC: true, mtu: test.mtu})
+			})
+		}
 	})
 	t.Run("PionServer_OpenSSLClient", func(t *testing.T) {
 		testPionServerOpenSSLClient(t, path)
 	})
 }
 
-func testPionClientOpenSSLServer(t *testing.T, path string) {
+func testPionClientOpenSSLServer(t *testing.T, path string, options openSSLServerOptions) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
@@ -78,20 +99,42 @@ func testPionClientOpenSSLServer(t *testing.T, path string) {
 	address, ok := socket.LocalAddr().(*net.UDPAddr)
 	require.True(t, ok)
 	require.NoError(t, socket.Close())
-	process := startOpenSSLProcess(t, ctx, path,
+	arguments := []string{
 		"s_server", "-dtls1_2", "-accept", address.String(),
 		"-cert", certificatePath, "-key", keyPath, "-naccept", "1",
-	)
-	// s_server flushes ACCEPT after binding its socket.
-	process.waitForOutput(t, ctx, "ACCEPT\n")
-	client, err := dtls.Dial("udp4", address,
+	}
+	clientOptions := []dtls.ClientOption{
 		dtls.WithInsecureSkipVerify(true),
 		dtls.WithMinVersion(protocol.Version1_2),
 		dtls.WithMaxVersion(protocol.Version1_2),
-	)
+	}
+	if options.webRTC {
+		arguments = append(arguments,
+			"-Verify", "1", "-verify_return_error", "-CAfile", certificatePath,
+			// Ed448 (0x0808) is unrecognized by Pion.
+			"-client_sigalgs", "ed448:ecdsa_secp256r1_sha256",
+			"-use_srtp", "SRTP_AES128_CM_SHA1_80",
+		)
+		clientOptions = append(clientOptions,
+			dtls.WithCertificates(certificate),
+			dtls.WithSRTPProtectionProfiles(dtls.SRTP_AES128_CM_HMAC_SHA1_80),
+		)
+	}
+	if options.mtu != "" {
+		arguments = append(arguments, "-mtu", options.mtu)
+	}
+	process := startOpenSSLProcess(t, ctx, path, arguments...)
+	// s_server flushes ACCEPT after binding its socket.
+	process.waitForOutput(t, ctx, "ACCEPT\n")
+	client, err := dtls.Dial("udp4", address, clientOptions...)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })
 	exchangeOpenSSLData(t, ctx, client, process)
+	if options.webRTC {
+		profile, selected := client.SelectedSRTPProtectionProfile()
+		require.True(t, selected, "DTLS-SRTP profile was not negotiated")
+		require.Equal(t, dtls.SRTP_AES128_CM_HMAC_SHA1_80, profile)
+	}
 }
 
 func testPionServerOpenSSLClient(t *testing.T, path string) {
