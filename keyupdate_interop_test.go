@@ -15,93 +15,38 @@ import (
 
 func TestBoringSSLDTLS13KeyUpdateInterop(t *testing.T) {
 	tests := []struct {
-		name  string
-		probe func(context.Context, string, io.Writer, commandContextFunc) error
+		name    string
+		probe   func(context.Context, string, io.Writer, commandContextFunc, boringSSLProbeOptions) error
+		options boringSSLProbeOptions
 	}{
 		{
-			name:  "BoringSSLInitiated/PionClient_BoringSSLServer",
-			probe: probeBoringSSL13PeerKeyUpdatePionClient,
+			name:    "BoringSSLInitiated/PionClient_BoringSSLServer",
+			probe:   probeBoringSSL13PionClientWithOptions,
+			options: boringSSLProbeOptions{boringSSLKeyUpdate: true},
 		},
 		{
-			name:  "BoringSSLInitiated/PionServer_BoringSSLClient",
-			probe: probeBoringSSL13PeerKeyUpdatePionServer,
+			name:    "BoringSSLInitiated/PionServer_BoringSSLClient",
+			probe:   probeBoringSSL13PionServerWithOptions,
+			options: boringSSLProbeOptions{boringSSLKeyUpdate: true},
 		},
 		{
-			name:  "PionInitiated/PionClient_BoringSSLServer",
-			probe: probeBoringSSL13PionKeyUpdatePionClient,
+			name:    "PionInitiated/PionClient_BoringSSLServer",
+			probe:   probeBoringSSL13PionClientWithOptions,
+			options: boringSSLProbeOptions{pionKeyUpdate: updatePionKeys},
 		},
 		{
-			name:  "PionInitiated/PionServer_BoringSSLClient",
-			probe: probeBoringSSL13PionKeyUpdatePionServer,
+			name:    "PionInitiated/PionServer_BoringSSLClient",
+			probe:   probeBoringSSL13PionServerWithOptions,
+			options: boringSSLProbeOptions{pionKeyUpdate: updatePionKeys},
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			runBoringSSLInteropTest(t, test.probe)
+			runBoringSSLInteropTest(t, test.probe, test.options)
 		})
 	}
-}
-
-func probeBoringSSL13PeerKeyUpdatePionClient(
-	ctx context.Context,
-	shimPath string,
-	stdout io.Writer,
-	commandContext commandContextFunc,
-) error {
-	return probeBoringSSL13PionClientWithOptions(
-		ctx,
-		shimPath,
-		stdout,
-		commandContext,
-		boringSSLProbeOptions{boringSSLKeyUpdate: true},
-	)
-}
-
-func probeBoringSSL13PeerKeyUpdatePionServer(
-	ctx context.Context,
-	shimPath string,
-	stdout io.Writer,
-	commandContext commandContextFunc,
-) error {
-	return probeBoringSSL13PionServerWithOptions(
-		ctx,
-		shimPath,
-		stdout,
-		commandContext,
-		boringSSLProbeOptions{boringSSLKeyUpdate: true},
-	)
-}
-
-func probeBoringSSL13PionKeyUpdatePionClient(
-	ctx context.Context,
-	shimPath string,
-	stdout io.Writer,
-	commandContext commandContextFunc,
-) error {
-	return probeBoringSSL13PionClientWithOptions(
-		ctx,
-		shimPath,
-		stdout,
-		commandContext,
-		boringSSLProbeOptions{pionKeyUpdate: updatePionKeys},
-	)
-}
-
-func probeBoringSSL13PionKeyUpdatePionServer(
-	ctx context.Context,
-	shimPath string,
-	stdout io.Writer,
-	commandContext commandContextFunc,
-) error {
-	return probeBoringSSL13PionServerWithOptions(
-		ctx,
-		shimPath,
-		stdout,
-		commandContext,
-		boringSSLProbeOptions{pionKeyUpdate: updatePionKeys},
-	)
 }
 
 func updatePionKeys(ctx context.Context, connection *dtls.Conn) error {

@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pion/dtls/v3/pkg/crypto/elliptic"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 )
 
@@ -33,7 +34,6 @@ const (
 	packetedBIOHeaderSize       = 5
 	packetedBIOTimeoutFrameSize = 9
 	maxPacketedBIODatagramSize  = 1<<16 - 1
-	boringSSLX25519CurveGroupID = 29
 
 	boringSSL13MessageTrace                    = "read hs 1\nwrite hs 2\nwrite hs 8\nwrite hs 11\nwrite hs 15\nwrite hs 20\nread hs 20\nwrite ack\nread alert 1 0\n"                               // nolint:lll
 	boringSSL13ClientMessageTrace              = "write hs 1\nread hs 2\nread hs 8\nread hs 11\nread hs 15\nread hs 20\nwrite hs 20\nread ack\nread hs 4\nread alert 1 0\n"                        // nolint:lll
@@ -75,6 +75,7 @@ type boringSSLCredentials struct {
 }
 
 type boringSSLProbeOptions struct {
+	keyExchangeGroup   elliptic.Curve
 	boringSSLKeyUpdate bool
 	pionKeyUpdate      pionKeyUpdateFunc
 }
@@ -85,6 +86,14 @@ type shimProcess struct {
 	waitErr  error
 	stdout   bytes.Buffer
 	stderr   bytes.Buffer
+}
+
+func (options boringSSLProbeOptions) curve() elliptic.Curve {
+	if options.keyExchangeGroup == 0 {
+		return elliptic.X25519
+	}
+
+	return options.keyExchangeGroup
 }
 
 func probeBoringSSL13(
@@ -272,7 +281,7 @@ func startBoringSSLShim(
 		"-server",
 		"-min-version", strconv.Itoa(dtls13Version),
 		"-max-version", strconv.Itoa(dtls13Version),
-		"-curves", strconv.Itoa(boringSSLX25519CurveGroupID),
+		"-curves", strconv.Itoa(int(options.curve())),
 		"-cert-file", credentials.certificatePath,
 		"-key-file", credentials.privateKeyPath,
 		"-no-ticket",
@@ -285,6 +294,9 @@ func startBoringSSLShim(
 	} else if options.pionKeyUpdate != nil {
 		arguments = append(arguments, "-async")
 		messageTrace = ""
+	}
+	if options.curve() == elliptic.X25519MLKEM768 {
+		messageTrace = strings.Replace(messageTrace, "write hs 11\n", "write hs 11\nwrite hs 11\n", 1)
 	}
 	if messageTrace != "" {
 		arguments = append(arguments, "-expect-msg-callback", messageTrace)
@@ -325,7 +337,7 @@ func startBoringSSLClientShim(
 		"-dtls",
 		"-min-version", strconv.Itoa(dtls13Version),
 		"-max-version", strconv.Itoa(dtls13Version),
-		"-curves", strconv.Itoa(boringSSLX25519CurveGroupID),
+		"-curves", strconv.Itoa(int(options.curve())),
 		"-no-ticket",
 		"-shim-writes-first",
 	}

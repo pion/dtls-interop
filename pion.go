@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/pion/dtls/v3"
-	"github.com/pion/dtls/v3/pkg/crypto/elliptic"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	"github.com/pion/dtls/v3/pkg/protocol"
 )
@@ -51,6 +50,7 @@ func runPionDTLS13Client(
 		connection,
 		connection.RemoteAddr(),
 		dtls.WithInsecureSkipVerify(true),
+		dtls.WithEllipticCurves(options.curve()),
 		dtls.WithMinVersion(protocol.Version1_3),
 		dtls.WithMaxVersion(protocol.Version1_3),
 	)
@@ -89,7 +89,7 @@ func runPionDTLS13Server(
 		dtls.WithCertificates(certificate),
 		dtls.WithInsecureSkipVerify(true),
 		dtls.WithInsecureSkipVerifyHello(true),
-		dtls.WithEllipticCurves(elliptic.X25519),
+		dtls.WithEllipticCurves(options.curve()),
 		dtls.WithMinVersion(protocol.Version1_3),
 		dtls.WithMaxVersion(protocol.Version1_3),
 	)
