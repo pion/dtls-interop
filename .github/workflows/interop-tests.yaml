@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+# SPDX-License-Identifier: MIT
+
+name: Interoperability tests
+
+on:
+  workflow_call:
+    inputs:
+      dtls-repository:
+        description: Repository containing the DTLS implementation to test
+        type: string
+        default: pion/dtls
+      dtls-ref:
+        description: DTLS branch, tag, or commit to test
+        type: string
+        default: main
+      interop-repository:
+        description: Repository containing the interop suite
+        type: string
+        default: pion/dtls-interop
+      interop-ref:
+        description: Interop branch, tag, or commit to run
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  interop:
+    name: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [boringssl, wolfssl, openssl3]
+    steps:
+      - name: Check out DTLS interop
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.interop-repository }}
+          ref: ${{ inputs.interop-ref }}
+
+      - name: Check out DTLS
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.dtls-repository }}
+          ref: ${{ inputs.dtls-ref }}
+          path: dtls
+
+      - name: Run interoperability tests
+        uses: ./
+        with:
+          dtls-path: dtls
+          runner: ${{ matrix.runner }}

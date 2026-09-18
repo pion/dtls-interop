@@ -18,26 +18,7 @@ concurrency:
 
 jobs:
   interop:
-    name: ${{ matrix.runner }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [boringssl, wolfssl, openssl3]
-    steps:
-      - name: Check out DTLS interop
-        uses: actions/checkout@v7
-
-      - name: Check out DTLS main
-        uses: actions/checkout@v7
-        with:
-          repository: pion/dtls
-          ref: main
-          path: dtls
-
-      - name: Run interoperability tests
-        uses: ./
-        with:
-          dtls-path: dtls
-          runner: ${{ matrix.runner }}
+    uses: ./.github/workflows/interop-tests.yaml
+    with:
+      interop-repository: ${{ github.repository }}
+      interop-ref: ${{ github.sha }}
