@@ -6,65 +6,53 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"io"
-	"maps"
-	"os/exec"
-	"slices"
-	"strings"
+	"errors"
+	"fmt"
 	"testing"
 
-	"github.com/pion/dtls/v4/pkg/crypto/elliptic"
+	"github.com/pion/dtls/v4"
 	"github.com/stretchr/testify/require"
 )
 
-func TestBoringSSLDTLS13Interop(t *testing.T) {
-	tests := []struct {
-		name  string
-		probe func(context.Context, string, io.Writer, commandContextFunc, boringSSLProbeOptions) error
-	}{
-		{
-			name:  "PionClient_BoringSSLServer",
-			probe: probeBoringSSL13PionClientWithOptions,
-		},
-		{
-			name:  "PionServer_BoringSSLClient",
-			probe: probeBoringSSL13PionServerWithOptions,
-		},
+var errInteropNegotiation = errors.New("unexpected interop negotiation")
+
+func TestBoringSSLInterop(t *testing.T) { runInteropSuite(t, boringSSLInterop()) }
+
+func TestOpenSSL3Interop(t *testing.T) { runInteropSuite(t, openSSLInterop()) }
+
+func TestWolfSSLInterop(t *testing.T) { runInteropSuite(t, wolfSSLInterop()) }
+
+func TestPionV3Interop(t *testing.T) { runInteropSuite(t, pionV3Interop()) }
+
+func (testCase interopCase) checkConnection(connection *dtls.Conn) error {
+	state, ok := connection.ConnectionState()
+	if !ok || state.NegotiatedVersion() != testCase.version {
+		return fmt.Errorf("%w: want version %v, got %v (state available: %t)",
+			errInteropNegotiation, testCase.version, state.NegotiatedVersion(), ok)
+	}
+	if testCase.scenario == interopWebRTC {
+		profile, selected := connection.SelectedSRTPProtectionProfile()
+		if !selected || profile != dtls.SRTP_AES128_CM_HMAC_SHA1_80 {
+			return fmt.Errorf("%w: DTLS-SRTP profile %v (selected: %t)", errInteropNegotiation, profile, selected)
+		}
 	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			runBoringSSLInteropTest(t, test.probe, boringSSLProbeOptions{})
-		})
+	return nil
+}
+
+func skipInterop(reason error, detail string) interopRun {
+	return func(*testing.T, interopCase) error {
+		return fmt.Errorf("%w: %s", reason, detail)
 	}
 }
 
-func runBoringSSLInteropTest(
-	t *testing.T,
-	probe func(context.Context, string, io.Writer, commandContextFunc, boringSSLProbeOptions) error,
-	options boringSSLProbeOptions,
-) {
+func runInteropSuite(t *testing.T, backend interopBackend) {
 	t.Helper()
-
-	for _, group := range slices.Sorted(maps.Keys(elliptic.Curves())) {
-		t.Run(group.String(), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
-			defer cancel()
-
-			groupOptions := options
-			groupOptions.keyExchangeGroup = group
-			var output bytes.Buffer
-			err := probe(
-				ctx,
-				environmentOrDefault("DTLS_INTEROP_BSSL_SHIM_BIN", "bssl-shim"),
-				&output,
-				exec.CommandContext,
-				groupOptions,
-			)
-			if output.Len() != 0 {
-				t.Log(strings.TrimSpace(output.String()))
+	for _, testCase := range standardInteropCases() {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := backend.run(t, testCase)
+			if errors.Is(err, errInteropNotSupported) || errors.Is(err, errInteropNotImplemented) {
+				t.Skip(err)
 			}
 			require.NoError(t, err)
 		})

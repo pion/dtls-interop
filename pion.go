@@ -34,8 +34,9 @@ var errUnexpectedBoringSSLApplicationData = errors.New("unexpected BoringSSL app
 type pionKeyUpdateFunc func(context.Context, *dtls.Conn) error
 
 type pionDTLS13ExchangeOptions struct {
-	updateKeys    pionKeyUpdateFunc
-	peerKeyUpdate bool
+	updateKeys      pionKeyUpdateFunc
+	peerKeyUpdate   bool
+	checkConnection func(*dtls.Conn) error
 }
 
 func runPionDTLS13Client(
@@ -48,7 +49,7 @@ func runPionDTLS13Client(
 		connection,
 		connection.RemoteAddr(),
 		dtls.WithInsecureSkipVerify(true),
-		dtls.WithEllipticCurves(options.curve()),
+		dtls.WithEllipticCurves(options.pionCurves()...),
 		dtls.WithMinVersion(protocol.Version1_3),
 		dtls.WithMaxVersion(protocol.Version1_3),
 	)
@@ -64,8 +65,9 @@ func runPionDTLS13Client(
 		"client",
 		"processed BoringSSL's terminal ACK and received",
 		pionDTLS13ExchangeOptions{
-			updateKeys:    options.pionKeyUpdate,
-			peerKeyUpdate: options.boringSSLKeyUpdate,
+			updateKeys:      options.pionKeyUpdate,
+			peerKeyUpdate:   options.boringSSLKeyUpdate,
+			checkConnection: options.checkConnection,
 		},
 	)
 }
@@ -87,7 +89,7 @@ func runPionDTLS13Server(
 		dtls.WithCertificates(certificate),
 		dtls.WithInsecureSkipVerify(true),
 		dtls.WithInsecureSkipVerifyHello(true),
-		dtls.WithEllipticCurves(options.curve()),
+		dtls.WithEllipticCurves(options.pionCurves()...),
 		dtls.WithMinVersion(protocol.Version1_3),
 		dtls.WithMaxVersion(protocol.Version1_3),
 	)
@@ -103,8 +105,9 @@ func runPionDTLS13Server(
 		"server",
 		"received",
 		pionDTLS13ExchangeOptions{
-			updateKeys:    options.pionKeyUpdate,
-			peerKeyUpdate: options.boringSSLKeyUpdate,
+			updateKeys:      options.pionKeyUpdate,
+			peerKeyUpdate:   options.boringSSLKeyUpdate,
+			checkConnection: options.checkConnection,
 		},
 	)
 }
@@ -133,6 +136,11 @@ func runPionDTLS13Exchange(
 	}
 	if err := connection.HandshakeContext(ctx); err != nil {
 		return fmt.Errorf("pion DTLS 1.3 handshake: %w", err)
+	}
+	if options.checkConnection != nil {
+		if err := options.checkConnection(connection); err != nil {
+			return err
+		}
 	}
 	_, _ = fmt.Fprintf(stdout, "Pion DTLS 1.3 %s handshake completed\n", role)
 
