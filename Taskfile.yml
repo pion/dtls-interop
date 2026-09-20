@@ -19,8 +19,9 @@ tasks:
           boringssl) test_pattern='^TestBoringSSL' ;;
           wolfssl) test_pattern='^TestWolfSSL' ;;
           openssl3) test_pattern='^TestOpenSSL3' ;;
+          pion-v3) test_pattern='^TestPionV3' ;;
           *)
-            echo "unknown interop runner: $DTLS_INTEROP_RUNNER (expected all, boringssl, wolfssl, or openssl3)" >&2
+            echo "unknown interop runner: $DTLS_INTEROP_RUNNER (expected all, boringssl, wolfssl, openssl3, or pion-v3)" >&2
             exit 1
             ;;
         esac
