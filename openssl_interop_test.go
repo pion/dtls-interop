@@ -24,11 +24,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/pion/dtls/v3"
-	cryptosuite "github.com/pion/dtls/v3/pkg/crypto/ciphersuite"
-	"github.com/pion/dtls/v3/pkg/crypto/elliptic"
-	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
-	"github.com/pion/dtls/v3/pkg/protocol"
+	"github.com/pion/dtls/v4"
+	cryptosuite "github.com/pion/dtls/v4/pkg/crypto/ciphersuite"
+	"github.com/pion/dtls/v4/pkg/crypto/elliptic"
+	"github.com/pion/dtls/v4/pkg/crypto/selfsign"
+	"github.com/pion/dtls/v4/pkg/protocol"
 	"github.com/stretchr/testify/require"
 )
 

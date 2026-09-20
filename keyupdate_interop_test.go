@@ -10,7 +10,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/pion/dtls/v3"
+	"github.com/pion/dtls/v4"
 )
 
 func TestBoringSSLDTLS13KeyUpdateInterop(t *testing.T) {

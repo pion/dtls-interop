@@ -51,6 +51,11 @@ tasks:
 
         project_directory="$(pwd -P)"
         dtls_directory="$(cd "$dtls_directory" && pwd -P)"
+        dtls_module="$(GOWORK=off go -C "$dtls_directory" list -m)"
+        if [ "$dtls_module" != "github.com/pion/dtls/v4" ]; then
+          echo "expected github.com/pion/dtls/v4 checkout, got $dtls_module" >&2
+          exit 1
+        fi
         workspace_directory="$(mktemp -d "${TMPDIR:-/tmp}/dtls-interop.XXXXXX")"
         (
           cd "$workspace_directory"
