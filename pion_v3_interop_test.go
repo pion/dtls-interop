@@ -7,35 +7,37 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"testing"
 
 	dtlsv3 "github.com/pion/dtls/v3"
+	ellipticv3 "github.com/pion/dtls/v3/pkg/crypto/elliptic"
 	"github.com/pion/dtls/v4"
 	"github.com/pion/dtls/v4/pkg/crypto/selfsign"
 	"github.com/pion/dtls/v4/pkg/protocol"
 	"github.com/stretchr/testify/require"
 )
 
-func TestPionV3DTLS12Interop(t *testing.T) {
-	for _, mode := range []struct {
-		name       string
-		maxVersion protocol.Version
-	}{
-		{"DTLS13Enabled", protocol.Version1_3},
-		{"DTLS13Disabled", protocol.Version1_2},
-	} {
-		t.Run(mode.name, func(t *testing.T) {
-			for _, role := range []string{"client", "server"} {
-				t.Run(role, func(t *testing.T) { testPionV3Interop(t, role, mode.maxVersion) })
-			}
-		})
+func runPionV3Case(t *testing.T, testCase interopCase) error {
+	t.Helper()
+	if testCase.version != protocol.Version1_2 {
+		return fmt.Errorf("%w: Pion v3 only supports DTLS 1.2", errInteropNotSupported)
 	}
+	switch testCase.scenario {
+	case interopHandshake, interopKeyExchange, interopVersionFallback:
+		testPionV3Interop(t, testCase)
+	default:
+		return fmt.Errorf("%w: Pion v3 %s adapter", errInteropNotImplemented, testCase.scenario)
+	}
+
+	return nil
 }
 
-func testPionV3Interop(t *testing.T, role string, maxVersion protocol.Version) {
+func testPionV3Interop(t *testing.T, testCase interopCase) {
 	t.Helper()
+	config := pionConfigForCase(testCase)
 	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
 	defer cancel()
 
@@ -51,22 +53,26 @@ func testPionV3Interop(t *testing.T, role string, maxVersion protocol.Version) {
 
 	var connection *dtls.Conn
 	var peer *dtlsv3.Conn
-	if role == "client" {
+	if testCase.role == interopPionClient {
 		connection, err = dtls.Client(socket, peerSocket.LocalAddr(),
 			dtls.WithInsecureSkipVerify(true),
-			dtls.WithMinVersion(protocol.Version1_2), dtls.WithMaxVersion(maxVersion))
+			dtls.WithEllipticCurves(config.groups...),
+			dtls.WithMinVersion(testCase.version), dtls.WithMaxVersion(config.maxVersion))
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = connection.Close() })
 		peer, err = dtlsv3.ServerWithOptions(peerSocket, socket.LocalAddr(),
-			dtlsv3.WithCertificates(certificate))
+			dtlsv3.WithCertificates(certificate),
+			dtlsv3.WithEllipticCurves(ellipticv3.Curve(config.peerGroup)))
 	} else {
 		connection, err = dtls.Server(socket, peerSocket.LocalAddr(),
 			dtls.WithCertificates(certificate),
-			dtls.WithMinVersion(protocol.Version1_2), dtls.WithMaxVersion(maxVersion))
+			dtls.WithEllipticCurves(config.groups...),
+			dtls.WithMinVersion(testCase.version), dtls.WithMaxVersion(config.maxVersion))
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = connection.Close() })
 		peer, err = dtlsv3.ClientWithOptions(peerSocket, socket.LocalAddr(),
-			dtlsv3.WithInsecureSkipVerify(true))
+			dtlsv3.WithInsecureSkipVerify(true),
+			dtlsv3.WithEllipticCurves(ellipticv3.Curve(config.peerGroup)))
 	}
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = peer.Close() })

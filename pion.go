@@ -50,7 +50,7 @@ func runPionDTLS13Client(
 		connection,
 		connection.RemoteAddr(),
 		dtls.WithInsecureSkipVerify(true),
-		dtls.WithEllipticCurves(options.curve()),
+		dtls.WithEllipticCurves(options.pionCurves()...),
 		dtls.WithMinVersion(protocol.Version1_3),
 		dtls.WithMaxVersion(protocol.Version1_3),
 	)
@@ -89,7 +89,7 @@ func runPionDTLS13Server(
 		dtls.WithCertificates(certificate),
 		dtls.WithInsecureSkipVerify(true),
 		dtls.WithInsecureSkipVerifyHello(true),
-		dtls.WithEllipticCurves(options.curve()),
+		dtls.WithEllipticCurves(options.pionCurves()...),
 		dtls.WithMinVersion(protocol.Version1_3),
 		dtls.WithMaxVersion(protocol.Version1_3),
 	)

@@ -13,20 +13,18 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"io"
-	"maps"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/pion/dtls/v4"
 	cryptosuite "github.com/pion/dtls/v4/pkg/crypto/ciphersuite"
-	"github.com/pion/dtls/v4/pkg/crypto/elliptic"
 	"github.com/pion/dtls/v4/pkg/crypto/selfsign"
 	"github.com/pion/dtls/v4/pkg/protocol"
 	"github.com/stretchr/testify/require"
@@ -44,13 +42,20 @@ type openSSLOutput struct {
 	changed chan struct{}
 }
 
-type openSSLServerOptions struct {
-	webRTC           bool
-	mtu              string
-	keyExchangeGroup elliptic.Curve
-}
-
-func TestOpenSSL3DTLS12Interop(t *testing.T) {
+func runOpenSSLCase(t *testing.T, testCase interopCase) error {
+	t.Helper()
+	if testCase.version != protocol.Version1_2 {
+		return fmt.Errorf("%w: OpenSSL 3 only supports DTLS 1.2", errInteropNotSupported)
+	}
+	switch testCase.scenario {
+	case interopHandshake, interopKeyExchange, interopVersionFallback:
+	case interopWebRTC:
+		if testCase.role != interopPionClient {
+			return fmt.Errorf("%w: OpenSSL WebRTC with Pion as server", errInteropNotImplemented)
+		}
+	default:
+		return fmt.Errorf("%w: OpenSSL %s adapter", errInteropNotImplemented, testCase.scenario)
+	}
 	path := environmentOrDefault("DTLS_INTEROP_OPENSSL3_BIN", "openssl-3")
 	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
 	defer cancel()
@@ -59,54 +64,23 @@ func TestOpenSSL3DTLS12Interop(t *testing.T) {
 	require.True(t, strings.HasPrefix(string(version), "OpenSSL 3."), "expected OpenSSL 3, got %s", version)
 	t.Log(strings.TrimSpace(string(version)))
 
-	t.Run("PionClient_OpenSSLServer", func(t *testing.T) {
-		runOpenSSLInteropTest(t, func(t *testing.T, group elliptic.Curve) {
-			testPionClientOpenSSLServer(t, path, openSSLServerOptions{keyExchangeGroup: group})
-		})
-	})
-	// Regression coverage for https://github.com/pion/dtls/pull/841
-	// OpenSSL's CertificateRequest may include signature algorithms Pion
-	// does not recognize. These must not prevent the client handshake.
-	t.Run("PionClient_OpenSSLServer_WebRTC", func(t *testing.T) {
-		for _, test := range []struct {
-			name string
-			mtu  string
-		}{
-			{name: "DefaultMTU"},
-			{name: "Fragmented", mtu: "256"},
-		} {
-			t.Run(test.name, func(t *testing.T) {
-				testPionClientOpenSSLServer(t, path, openSSLServerOptions{webRTC: true, mtu: test.mtu})
-			})
-		}
-	})
-	t.Run("PionServer_OpenSSLClient", func(t *testing.T) {
-		runOpenSSLInteropTest(t, func(t *testing.T, group elliptic.Curve) {
-			testPionServerOpenSSLClient(t, path, group)
-		})
-	})
-}
-
-func runOpenSSLInteropTest(t *testing.T, test func(*testing.T, elliptic.Curve)) {
-	t.Helper()
-
-	for _, group := range slices.Sorted(maps.Keys(elliptic.Curves())) {
-		t.Run(group.String(), func(t *testing.T) {
-			if group == elliptic.X25519MLKEM768 {
-				t.Skip("X25519MLKEM768 requires DTLS 1.3")
-			}
-			test(t, group)
-		})
+	if testCase.role == interopPionClient {
+		testPionClientOpenSSLServer(t, path, testCase)
+	} else {
+		testPionServerOpenSSLClient(t, path, testCase)
 	}
+
+	return nil
 }
 
-func testPionClientOpenSSLServer(t *testing.T, path string, options openSSLServerOptions) {
+func testPionClientOpenSSLServer(t *testing.T, path string, testCase interopCase) {
 	t.Helper()
+	config := pionConfigForCase(testCase)
 
 	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
 	defer cancel()
 	var certificate tls.Certificate
-	if options.webRTC {
+	if testCase.scenario == interopWebRTC {
 		var err error
 		certificate, err = selfsign.GenerateSelfSigned()
 		require.NoError(t, err)
@@ -137,9 +111,10 @@ func testPionClientOpenSSLServer(t *testing.T, path string, options openSSLServe
 	clientOptions := []dtls.ClientOption{
 		dtls.WithInsecureSkipVerify(true),
 		dtls.WithMinVersion(protocol.Version1_2),
-		dtls.WithMaxVersion(protocol.Version1_2),
+		dtls.WithMaxVersion(config.maxVersion),
 	}
-	if options.webRTC {
+	// Regression for pion/dtls#841: unknown CertificateRequest signature algorithms.
+	if testCase.scenario == interopWebRTC {
 		arguments = append(arguments,
 			"-Verify", "1", "-verify_return_error", "-CAfile", certificatePath,
 			// Ed448 (0x0808) is unrecognized by Pion.
@@ -152,16 +127,16 @@ func testPionClientOpenSSLServer(t *testing.T, path string, options openSSLServe
 		)
 	} else {
 		arguments = append(arguments,
-			"-groups", options.keyExchangeGroup.String(),
+			"-groups", config.peerGroup.String(),
 			"-cipher", "ECDHE-RSA-AES128-GCM-SHA256",
 		)
 		clientOptions = append(clientOptions,
-			dtls.WithEllipticCurves(options.keyExchangeGroup),
+			dtls.WithEllipticCurves(config.groups...),
 			dtls.WithCipherSuites(cryptosuite.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256),
 		)
 	}
-	if options.mtu != "" {
-		arguments = append(arguments, "-mtu", options.mtu)
+	if testCase.mtu != "" {
+		arguments = append(arguments, "-mtu", testCase.mtu)
 	}
 	process := startOpenSSLProcess(t, ctx, path, arguments...)
 	// s_server flushes ACCEPT after binding its socket.
@@ -170,31 +145,32 @@ func testPionClientOpenSSLServer(t *testing.T, path string, options openSSLServe
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })
 	exchangeOpenSSLData(t, ctx, client, process)
-	if options.webRTC {
+	if testCase.scenario == interopWebRTC {
 		profile, selected := client.SelectedSRTPProtectionProfile()
 		require.True(t, selected, "DTLS-SRTP profile was not negotiated")
 		require.Equal(t, dtls.SRTP_AES128_CM_HMAC_SHA1_80, profile)
 	}
 }
 
-func testPionServerOpenSSLClient(t *testing.T, path string, group elliptic.Curve) {
+func testPionServerOpenSSLClient(t *testing.T, path string, testCase interopCase) {
 	t.Helper()
+	config := pionConfigForCase(testCase)
 
 	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
 	defer cancel()
 	certificate := generateOpenSSLCertificate(t)
 	listener, err := dtls.ListenAddr("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)},
 		dtls.WithCertificates(certificate),
-		dtls.WithEllipticCurves(group),
+		dtls.WithEllipticCurves(config.groups...),
 		dtls.WithCipherSuites(cryptosuite.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256),
 		dtls.WithMinVersion(protocol.Version1_2),
-		dtls.WithMaxVersion(protocol.Version1_2),
+		dtls.WithMaxVersion(config.maxVersion),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = listener.Close() })
 	process := startOpenSSLProcess(t, ctx, path,
 		"s_client", "-dtls1_2", "-connect", listener.Addr().String(), "-quiet",
-		"-groups", group.String(),
+		"-groups", config.peerGroup.String(),
 		"-cipher", "ECDHE-RSA-AES128-GCM-SHA256",
 	)
 	acceptCtx, cancelAccept := context.WithCancel(ctx)

@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net"
 	"os/exec"
@@ -27,14 +28,6 @@ import (
 
 const wolfSSLApplicationMessage = "hello wolfssl!"
 
-type wolfSSLCIDTestCase struct {
-	name              string
-	pionCIDEnabled    bool
-	pionReceiveCID    []byte
-	wolfSSLCIDEnabled bool
-	wolfSSLReceiveCID string
-}
-
 type wolfSSLProcess struct {
 	cancel   context.CancelFunc
 	waitDone chan struct{}
@@ -48,52 +41,46 @@ type wolfSSLAcceptResult struct {
 	err        error
 }
 
-func TestWolfSSLDTLS13Interop(t *testing.T) {
-	testCases := []wolfSSLCIDTestCase{
-		{name: "NoCID"},
-		{
-			name:              "ZeroLengthCID",
-			pionCIDEnabled:    true,
-			wolfSSLCIDEnabled: true,
-		},
-		{
-			name:              "NonZeroCID",
-			pionCIDEnabled:    true,
-			pionReceiveCID:    []byte("pion-cid"),
-			wolfSSLCIDEnabled: true,
-			wolfSSLReceiveCID: "wolf-id",
-		},
-		{
-			name:              "PionZeroLength_WolfSSLNonZero",
-			pionCIDEnabled:    true,
-			wolfSSLCIDEnabled: true,
-			wolfSSLReceiveCID: "wolf-id",
-		},
-		{
-			name:              "PionNonZero_WolfSSLZeroLength",
-			pionCIDEnabled:    true,
-			pionReceiveCID:    []byte("pion-cid"),
-			wolfSSLCIDEnabled: true,
-		},
+//nolint:cyclop
+func runWolfSSLCase(t *testing.T, testCase interopCase) error {
+	t.Helper()
+	if testCase.version != protocol.Version1_3 {
+		return fmt.Errorf("%w: wolfSSL adapter currently uses DTLS 1.3", errInteropNotImplemented)
+	}
+	switch testCase.scenario {
+	case interopHandshake, interopCID:
+		if testCase.role == interopPionClient {
+			testPionClientWolfSSLServer(t, testCase.cid)
+		} else {
+			testPionServerWolfSSLClient(t, testCase.cid)
+		}
+	case interopKeyExchange:
+		if testCase.group != elliptic.P256 || testCase.groupFallback {
+			return fmt.Errorf("%w: wolfSSL key exchange group configuration", errInteropNotImplemented)
+		}
+		if testCase.role == interopPionClient {
+			testPionClientWolfSSLServer(t, interopCIDOptions{})
+		} else {
+			testPionServerWolfSSLClient(t, interopCIDOptions{})
+		}
+	case interopCIDRebinding:
+		if testCase.role != interopPionServer {
+			return fmt.Errorf("%w: wolfSSL rebinding with Pion as client", errInteropNotImplemented)
+		}
+		testWolfSSLDTLS13CIDRebinding(t)
+	case interopCIDPolicyDiscard:
+		if testCase.role != interopPionClient {
+			return fmt.Errorf("%w: wolfSSL CID discard with Pion as server", errInteropNotImplemented)
+		}
+		testWolfSSLDTLS13CIDPolicyDiscard(t)
+	default:
+		return fmt.Errorf("%w: wolfSSL %s adapter", errInteropNotImplemented, testCase.scenario)
 	}
 
-	t.Run("PionClient_WolfSSLServer", func(t *testing.T) {
-		for _, testCase := range testCases {
-			t.Run(testCase.name, func(t *testing.T) {
-				testPionClientWolfSSLServer(t, testCase)
-			})
-		}
-	})
-	t.Run("PionServer_WolfSSLClient", func(t *testing.T) {
-		for _, testCase := range testCases {
-			t.Run(testCase.name, func(t *testing.T) {
-				testPionServerWolfSSLClient(t, testCase)
-			})
-		}
-	})
+	return nil
 }
 
-func testPionClientWolfSSLServer(t *testing.T, testCase wolfSSLCIDTestCase) {
+func testPionClientWolfSSLServer(t *testing.T, testCase interopCIDOptions) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
@@ -146,7 +133,7 @@ func testPionClientWolfSSLServer(t *testing.T, testCase wolfSSLCIDTestCase) {
 	process.requireCIDNegotiation(t, testCase)
 }
 
-func testPionServerWolfSSLClient(t *testing.T, testCase wolfSSLCIDTestCase) {
+func testPionServerWolfSSLClient(t *testing.T, testCase interopCIDOptions) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
@@ -205,7 +192,7 @@ func testPionServerWolfSSLClient(t *testing.T, testCase wolfSSLCIDTestCase) {
 	process.requireNoError(t, "close Pion DTLS connection", server.Close())
 }
 
-func (testCase wolfSSLCIDTestCase) pionCIDOption() dtls.Option {
+func (testCase interopCIDOptions) pionCIDOption() dtls.Option {
 	if !testCase.pionCIDEnabled {
 		return nil
 	}
@@ -217,14 +204,14 @@ func (testCase wolfSSLCIDTestCase) pionCIDOption() dtls.Option {
 	}, dtls.CIDPathMigrationUnsafe)
 }
 
-func (testCase wolfSSLCIDTestCase) wolfSSLArguments() []string {
-	if !testCase.wolfSSLCIDEnabled {
+func (testCase interopCIDOptions) wolfSSLArguments() []string {
+	if !testCase.peerCIDEnabled {
 		return nil
 	}
 
 	arguments := []string{"--cid"}
-	if testCase.wolfSSLReceiveCID != "" {
-		arguments = append(arguments, testCase.wolfSSLReceiveCID)
+	if testCase.peerReceiveCID != "" {
+		arguments = append(arguments, testCase.peerReceiveCID)
 	}
 
 	return arguments
@@ -347,11 +334,11 @@ func (process *wolfSSLProcess) wait(t *testing.T, ctx context.Context) {
 	}
 }
 
-func (process *wolfSSLProcess) requireCIDNegotiation(t *testing.T, testCase wolfSSLCIDTestCase) {
+func (process *wolfSSLProcess) requireCIDNegotiation(t *testing.T, testCase interopCIDOptions) {
 	t.Helper()
 
 	output := process.stdout.String()
-	if !testCase.pionCIDEnabled || !testCase.wolfSSLCIDEnabled {
+	if !testCase.pionCIDEnabled || !testCase.peerCIDEnabled {
 		require.NotContains(t, output, "CID extension was negotiated")
 
 		return
@@ -406,22 +393,23 @@ type wolfSSLRebindingProxy struct {
 	loopError   error
 }
 
-// TestWolfSSLDTLS13CIDRebinding verifies the peer-address update requirements
+// testWolfSSLDTLS13CIDRebinding verifies the peer-address update requirements
 // from RFC 9146 Section 6 using DTLS 1.3 unified-header CID records.
 // https://datatracker.ietf.org/doc/html/rfc9146#section-6
-func TestWolfSSLDTLS13CIDRebinding(t *testing.T) {
+func testWolfSSLDTLS13CIDRebinding(t *testing.T) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
 	defer cancel()
 
 	certificate, err := selfsign.GenerateSelfSigned()
 	require.NoError(t, err)
 	serverCID := []byte("pion-cid")
-	testCase := wolfSSLCIDTestCase{
-		name:              "NonZeroCIDRebinding",
-		pionCIDEnabled:    true,
-		pionReceiveCID:    serverCID,
-		wolfSSLCIDEnabled: true,
-		wolfSSLReceiveCID: "wolf-id",
+	testCase := interopCIDOptions{
+		name:           "NonZeroCIDRebinding",
+		pionCIDEnabled: true,
+		pionReceiveCID: serverCID,
+		peerCIDEnabled: true,
+		peerReceiveCID: "wolf-id",
 	}
 	listener, err := dtls.ListenAddr(
 		"udp4",
@@ -473,20 +461,21 @@ func TestWolfSSLDTLS13CIDRebinding(t *testing.T) {
 	process.requireNoError(t, "close Pion DTLS connection", server.Close())
 }
 
-// TestWolfSSLDTLS13CIDPolicyDiscard verifies that Pion keeps a negotiated-CID
+// testWolfSSLDTLS13CIDPolicyDiscard verifies that Pion keeps a negotiated-CID
 // connection alive when its peer sends a protected DTLS 1.3 record without a
 // CID.
-func TestWolfSSLDTLS13CIDPolicyDiscard(t *testing.T) {
+func testWolfSSLDTLS13CIDPolicyDiscard(t *testing.T) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
 	defer cancel()
 
 	serverCID := []byte("pion-cid")
-	testCase := wolfSSLCIDTestCase{
-		name:              "CIDlessProtectedRecord",
-		pionCIDEnabled:    true,
-		pionReceiveCID:    serverCID,
-		wolfSSLCIDEnabled: true,
-		wolfSSLReceiveCID: "wolf-id",
+	testCase := interopCIDOptions{
+		name:           "CIDlessProtectedRecord",
+		pionCIDEnabled: true,
+		pionReceiveCID: serverCID,
+		peerCIDEnabled: true,
+		peerReceiveCID: "wolf-id",
 	}
 	serverAddress := reserveWolfSSLAddress(t)
 	proxy := newWolfSSLRebindingProxy(t, serverAddress)
