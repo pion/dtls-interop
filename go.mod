@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/pion/dtls/v3 v3.1.10
-	github.com/pion/dtls/v4 v4.0.0-20260926043111-8d759ccd0e38
+	github.com/pion/dtls/v4 v4.0.0-20260926124941-397d2458cdbe
 	github.com/stretchr/testify v1.12.1
 )
 
