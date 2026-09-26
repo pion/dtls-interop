@@ -75,9 +75,10 @@ type boringSSLCredentials struct {
 }
 
 type boringSSLProbeOptions struct {
-	keyExchangeGroup   elliptic.Curve
-	boringSSLKeyUpdate bool
-	pionKeyUpdate      pionKeyUpdateFunc
+	keyExchangeGroup      elliptic.Curve
+	pionKeyExchangeGroups []elliptic.Curve
+	boringSSLKeyUpdate    bool
+	pionKeyUpdate         pionKeyUpdateFunc
 }
 
 type shimProcess struct {
@@ -94,6 +95,14 @@ func (options boringSSLProbeOptions) curve() elliptic.Curve {
 	}
 
 	return options.keyExchangeGroup
+}
+
+func (options boringSSLProbeOptions) pionCurves() []elliptic.Curve {
+	if len(options.pionKeyExchangeGroups) != 0 {
+		return options.pionKeyExchangeGroups
+	}
+
+	return []elliptic.Curve{options.curve()}
 }
 
 func probeBoringSSL13(
