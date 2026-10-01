@@ -26,8 +26,7 @@ const (
 	dtls13SingleRecordACKDatagramSize = 40
 	// One-record KeyUpdate: five-byte unified header, 13-byte handshake,
 	// one-byte inner content type, and a 16-byte AEAD tag.
-	dtls13KeyUpdateDatagramSize        = 35
-	dtls13NewSessionTicketDatagramSize = 87
+	dtls13KeyUpdateDatagramSize = 35
 )
 
 var errUnexpectedBoringSSLApplicationData = errors.New("unexpected BoringSSL application data")
@@ -35,9 +34,8 @@ var errUnexpectedBoringSSLApplicationData = errors.New("unexpected BoringSSL app
 type pionKeyUpdateFunc func(context.Context, *dtls.Conn) error
 
 type pionDTLS13ExchangeOptions struct {
-	updateKeys       pionKeyUpdateFunc
-	peerKeyUpdate    bool
-	newSessionTicket bool
+	updateKeys    pionKeyUpdateFunc
+	peerKeyUpdate bool
 }
 
 func runPionDTLS13Client(
@@ -105,9 +103,8 @@ func runPionDTLS13Server(
 		"server",
 		"received",
 		pionDTLS13ExchangeOptions{
-			updateKeys:       options.pionKeyUpdate,
-			peerKeyUpdate:    options.boringSSLKeyUpdate,
-			newSessionTicket: true,
+			updateKeys:    options.pionKeyUpdate,
+			peerKeyUpdate: options.boringSSLKeyUpdate,
 		},
 	)
 }
@@ -153,20 +150,6 @@ func runPionDTLS13Exchange(
 	}
 	_, _ = fmt.Fprintf(stdout, "Pion %s application record %q\n", applicationRecordDescription, received)
 
-	if options.newSessionTicket {
-		if err := packetedConnection.waitForWriteSizeAfter(
-			ctx,
-			0,
-			dtls13NewSessionTicketDatagramSize,
-		); err != nil {
-			return err
-		}
-	}
-	if options.updateKeys != nil && options.newSessionTicket {
-		if err := packetedConnection.advanceClock(ctx, time.Second); err != nil {
-			return err
-		}
-	}
 	var (
 		keyUpdateDone      chan error
 		keyUpdateCompleted bool

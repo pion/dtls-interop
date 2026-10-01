@@ -35,10 +35,10 @@ const (
 	packetedBIOTimeoutFrameSize = 9
 	maxPacketedBIODatagramSize  = 1<<16 - 1
 
-	boringSSL13MessageTrace                    = "read hs 1\nwrite hs 2\nwrite hs 8\nwrite hs 11\nwrite hs 15\nwrite hs 20\nread hs 20\nwrite ack\nread alert 1 0\n"                               // nolint:lll
-	boringSSL13ClientMessageTrace              = "write hs 1\nread hs 2\nread hs 8\nread hs 11\nread hs 15\nread hs 20\nwrite hs 20\nread ack\nread hs 4\nread alert 1 0\n"                        // nolint:lll
-	boringSSL13PeerKeyUpdateMessageTrace       = "read hs 1\nwrite hs 2\nwrite hs 8\nwrite hs 11\nwrite hs 15\nwrite hs 20\nread hs 20\nwrite ack\nwrite hs 24\nread ack\nread alert 1 0\n"        // nolint:lll
-	boringSSL13PeerKeyUpdateClientMessageTrace = "write hs 1\nread hs 2\nread hs 8\nread hs 11\nread hs 15\nread hs 20\nwrite hs 20\nread ack\nread hs 4\nwrite hs 24\nread ack\nread alert 1 0\n" // nolint:lll
+	boringSSL13MessageTrace                    = "read hs 1\nwrite hs 2\nwrite hs 8\nwrite hs 11\nwrite hs 15\nwrite hs 20\nread hs 20\nwrite ack\nread alert 1 0\n"                        // nolint:lll
+	boringSSL13ClientMessageTrace              = "write hs 1\nread hs 2\nread hs 8\nread hs 11\nread hs 15\nread hs 20\nwrite hs 20\nread ack\nread alert 1 0\n"                            // nolint:lll
+	boringSSL13PeerKeyUpdateMessageTrace       = "read hs 1\nwrite hs 2\nwrite hs 8\nwrite hs 11\nwrite hs 15\nwrite hs 20\nread hs 20\nwrite ack\nwrite hs 24\nread ack\nread alert 1 0\n" // nolint:lll
+	boringSSL13PeerKeyUpdateClientMessageTrace = "write hs 1\nread hs 2\nread hs 8\nread hs 11\nread hs 15\nread hs 20\nwrite hs 20\nread ack\nwrite hs 24\nread ack\nread alert 1 0\n"     // nolint:lll
 )
 
 var (
@@ -339,6 +339,7 @@ func startBoringSSLClientShim(
 		"-max-version", strconv.Itoa(dtls13Version),
 		"-curves", strconv.Itoa(int(options.curve())),
 		"-no-ticket",
+		"-expect-no-session",
 		"-shim-writes-first",
 	}
 	messageTrace := boringSSL13ClientMessageTrace
