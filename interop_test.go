@@ -6,8 +6,14 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os/exec"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/pion/dtls/v4"
@@ -23,6 +29,8 @@ func TestOpenSSL3Interop(t *testing.T) { runInteropSuite(t, openSSLInterop()) }
 func TestWolfSSLInterop(t *testing.T) { runInteropSuite(t, wolfSSLInterop()) }
 
 func TestPionV3Interop(t *testing.T) { runInteropSuite(t, pionV3Interop()) }
+
+func TestMbedTLSInterop(t *testing.T) { runInteropSuite(t, mbedTLSInterop()) }
 
 func (testCase interopCase) checkConnection(connection *dtls.Conn) error {
 	state, ok := connection.ConnectionState()
@@ -57,4 +65,90 @@ func runInteropSuite(t *testing.T, backend interopBackend) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+type interopProcess struct {
+	stdin    io.WriteCloser
+	output   interopOutput
+	waitDone chan struct{}
+}
+
+type interopOutput struct {
+	mutex   sync.Mutex
+	buffer  bytes.Buffer
+	changed chan struct{}
+}
+
+func startInteropProcess(t *testing.T, ctx context.Context, path string, arguments ...string) *interopProcess {
+	t.Helper()
+
+	childCtx, cancel := context.WithCancel(ctx)
+	command := exec.CommandContext(childCtx, path, arguments...) //nolint:gosec
+	process := &interopProcess{
+		output:   interopOutput{changed: make(chan struct{}, 1)},
+		waitDone: make(chan struct{}),
+	}
+	command.Stdout = &process.output
+	command.Stderr = &process.output
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		cancel()
+	}
+	require.NoError(t, err)
+	process.stdin = stdin
+	err = command.Start()
+	if err != nil {
+		cancel()
+		_ = stdin.Close()
+	}
+	require.NoError(t, err, "start interop peer")
+	go func() {
+		_ = command.Wait()
+		close(process.waitDone)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = stdin.Close()
+		<-process.waitDone
+		if t.Failed() {
+			t.Log(process.output.String())
+		}
+	})
+
+	return process
+}
+
+func (process *interopProcess) waitForOutput(t *testing.T, ctx context.Context, expected string) {
+	t.Helper()
+
+	for !strings.Contains(process.output.String(), expected) {
+		select {
+		case <-process.output.changed:
+		case <-process.waitDone:
+			require.FailNowf(t, "interop peer exited before expected output",
+				"want %q, got %s", expected, process.output.String())
+		case <-ctx.Done():
+			require.NoErrorf(t, ctx.Err(), "wait for interop peer output %q: %s", expected, process.output.String())
+		}
+	}
+}
+
+func (output *interopOutput) Write(payload []byte) (int, error) {
+	output.mutex.Lock()
+	defer output.mutex.Unlock()
+
+	written, err := output.buffer.Write(payload)
+	select {
+	case output.changed <- struct{}{}:
+	default:
+	}
+
+	return written, err
+}
+
+func (output *interopOutput) String() string {
+	output.mutex.Lock()
+	defer output.mutex.Unlock()
+
+	return output.buffer.String()
 }

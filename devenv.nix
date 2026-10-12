@@ -30,6 +30,7 @@ in
   ];
 
   env = {
+    DTLS_INTEROP_MBEDTLS_SERVER_BIN = "${pkgs.mbedtls}/bin/ssl_server2";
     DTLS_INTEROP_OPENSSL3_BIN = "${openssl3}/bin/openssl";
     DTLS_INTEROP_OPENSSL4_BIN = "${openssl4}/bin/openssl";
     DTLS_INTEROP_BSSL_SHIM_BIN = "${boringssl}/bin/bssl_shim";

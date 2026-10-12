@@ -6,7 +6,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -20,7 +19,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/pion/dtls/v4"
@@ -29,18 +27,6 @@ import (
 	"github.com/pion/dtls/v4/pkg/protocol"
 	"github.com/stretchr/testify/require"
 )
-
-type openSSLProcess struct {
-	stdin    io.WriteCloser
-	output   openSSLOutput
-	waitDone chan struct{}
-}
-
-type openSSLOutput struct {
-	mutex   sync.Mutex
-	buffer  bytes.Buffer
-	changed chan struct{}
-}
 
 func openSSLInterop() interopBackend {
 	notImplemented := skipInterop(errInteropNotImplemented, "OpenSSL adapter")
@@ -149,7 +135,7 @@ func testPionClientOpenSSLServer(t *testing.T, path string, testCase interopCase
 	if testCase.mtu != "" {
 		arguments = append(arguments, "-mtu", testCase.mtu)
 	}
-	process := startOpenSSLProcess(t, ctx, path, arguments...)
+	process := startInteropProcess(t, ctx, path, arguments...)
 	// s_server flushes ACCEPT after binding its socket.
 	process.waitForOutput(t, ctx, "ACCEPT\n")
 	client, err := dtls.Dial("udp4", address, clientOptions...)
@@ -174,7 +160,7 @@ func testPionServerOpenSSLClient(t *testing.T, path string, testCase interopCase
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = listener.Close() })
-	process := startOpenSSLProcess(t, ctx, path,
+	process := startInteropProcess(t, ctx, path,
 		"s_client", "-dtls1_2", "-connect", listener.Addr().String(), "-quiet",
 		"-groups", config.peerGroup.String(),
 		"-cipher", "ECDHE-RSA-AES128-GCM-SHA256",
@@ -208,7 +194,7 @@ func generateOpenSSLCertificate(t *testing.T) tls.Certificate {
 }
 
 func exchangeOpenSSLData(
-	t *testing.T, ctx context.Context, connection *dtls.Conn, process *openSSLProcess, testCase interopCase,
+	t *testing.T, ctx context.Context, connection *dtls.Conn, process *interopProcess, testCase interopCase,
 ) {
 	t.Helper()
 
@@ -234,77 +220,4 @@ func exchangeOpenSSLData(
 	require.NoError(t, err, process.output.String())
 	require.Equal(t, openSSLMessage, string(received))
 	t.Log("DTLS 1.2 handshake and application data in both directions completed")
-}
-
-func startOpenSSLProcess(t *testing.T, ctx context.Context, path string, arguments ...string) *openSSLProcess {
-	t.Helper()
-
-	childCtx, cancel := context.WithCancel(ctx)
-	command := exec.CommandContext(childCtx, path, arguments...) //nolint:gosec
-	process := &openSSLProcess{
-		output:   openSSLOutput{changed: make(chan struct{}, 1)},
-		waitDone: make(chan struct{}),
-	}
-	command.Stdout = &process.output
-	command.Stderr = &process.output
-	stdin, err := command.StdinPipe()
-	if err != nil {
-		cancel()
-	}
-	require.NoError(t, err)
-	process.stdin = stdin
-	err = command.Start()
-	if err != nil {
-		cancel()
-		_ = stdin.Close()
-	}
-	require.NoError(t, err, "start OpenSSL 3")
-	go func() {
-		_ = command.Wait()
-		close(process.waitDone)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		_ = stdin.Close()
-		<-process.waitDone
-		if t.Failed() {
-			t.Log(process.output.String())
-		}
-	})
-
-	return process
-}
-
-func (process *openSSLProcess) waitForOutput(t *testing.T, ctx context.Context, expected string) {
-	t.Helper()
-
-	for !strings.Contains(process.output.String(), expected) {
-		select {
-		case <-process.output.changed:
-		case <-process.waitDone:
-			require.FailNowf(t, "OpenSSL exited before expected output", "want %q, got %s", expected, process.output.String())
-		case <-ctx.Done():
-			require.NoErrorf(t, ctx.Err(), "wait for OpenSSL output %q: %s", expected, process.output.String())
-		}
-	}
-}
-
-func (output *openSSLOutput) Write(payload []byte) (int, error) {
-	output.mutex.Lock()
-	defer output.mutex.Unlock()
-
-	written, err := output.buffer.Write(payload)
-	select {
-	case output.changed <- struct{}{}:
-	default:
-	}
-
-	return written, err
-}
-
-func (output *openSSLOutput) String() string {
-	output.mutex.Lock()
-	defer output.mutex.Unlock()
-
-	return output.buffer.String()
 }
