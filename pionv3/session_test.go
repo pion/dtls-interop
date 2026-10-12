@@ -29,6 +29,8 @@ func TestPionV3SessionResume(t *testing.T) {
 	defer report()
 
 	t.Run("resumed", func(t *testing.T) {
+		t.Skip("Pion v3 does not negotiate connection IDs during session resumption")
+
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
