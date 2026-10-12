@@ -28,17 +28,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func openSSLInterop() interopBackend {
+func openSSLInterop(majorVersion string) interopBackend {
+	runCase := func(t *testing.T, testCase interopCase) error {
+		return runOpenSSLCase(t, testCase, majorVersion)
+	}
 	notImplemented := skipInterop(errInteropNotImplemented, "OpenSSL adapter")
 
 	return interopBackend{
 		versions:     []protocol.Version{protocol.Version1_2},
 		otherVersion: errInteropNotSupported,
 		scenarios: map[interopScenario]interopRun{
-			interopHandshake:        runOpenSSLCase,
-			interopKeyExchange:      runOpenSSLCase,
-			interopVersionFallback:  runOpenSSLCase,
-			interopWebRTC:           runOpenSSLCase,
+			interopHandshake:        runCase,
+			interopKeyExchange:      runCase,
+			interopVersionFallback:  runCase,
+			interopWebRTC:           runCase,
 			interopKeyUpdatePion:    skipInterop(errInteropNotSupported, "requires DTLS 1.3"),
 			interopKeyUpdatePeer:    skipInterop(errInteropNotSupported, "requires DTLS 1.3"),
 			interopCID:              notImplemented,
@@ -48,17 +51,18 @@ func openSSLInterop() interopBackend {
 	}
 }
 
-func runOpenSSLCase(t *testing.T, testCase interopCase) error {
+func runOpenSSLCase(t *testing.T, testCase interopCase, majorVersion string) error {
 	t.Helper()
 	if testCase.scenario == interopWebRTC && testCase.role != interopPionClient {
 		return fmt.Errorf("%w: OpenSSL WebRTC with Pion as server", errInteropNotImplemented)
 	}
-	path := environmentOrDefault("DTLS_INTEROP_OPENSSL3_BIN", "openssl-3")
+	path := environmentOrDefault("DTLS_INTEROP_OPENSSL"+majorVersion+"_BIN", "openssl-"+majorVersion)
 	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
 	defer cancel()
 	version, err := exec.CommandContext(ctx, path, "version").CombinedOutput() //nolint:gosec
 	require.NoError(t, err, string(version))
-	require.True(t, strings.HasPrefix(string(version), "OpenSSL 3."), "expected OpenSSL 3, got %s", version)
+	require.True(t, strings.HasPrefix(string(version), "OpenSSL "+majorVersion+"."),
+		"expected OpenSSL %s, got %s", majorVersion, version)
 	t.Log(strings.TrimSpace(string(version)))
 
 	if testCase.role == interopPionClient {

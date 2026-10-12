@@ -25,6 +25,7 @@ The following implementations have test runners:
 | Pion DTLS v3 | `pion-v3` |
 | BoringSSL | `boringssl` |
 | OpenSSL 3 | `openssl3` |
+| OpenSSL 4 | `openssl4` |
 | wolfSSL | `wolfssl` |
 | Mbed TLS | `mbedtls` |
 
@@ -44,6 +45,7 @@ Use `RUNNER` to select one:
 ```sh
 task interop RUNNER=pion-v4
 task interop RUNNER=boringssl
+task interop RUNNER=openssl4
 ```
 
 ### Select the Pion version

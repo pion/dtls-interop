@@ -25,7 +25,9 @@ var errInteropNegotiation = errors.New("unexpected interop negotiation")
 
 func TestBoringSSLInterop(t *testing.T) { runInteropSuite(t, boringSSLInterop()) }
 
-func TestOpenSSL3Interop(t *testing.T) { runInteropSuite(t, openSSLInterop()) }
+func TestOpenSSL3Interop(t *testing.T) { runInteropSuite(t, openSSLInterop("3")) }
+
+func TestOpenSSL4Interop(t *testing.T) { runInteropSuite(t, openSSLInterop("4")) }
 
 func TestWolfSSLInterop(t *testing.T) { runInteropSuite(t, wolfSSLInterop()) }
 
