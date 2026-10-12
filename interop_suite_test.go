@@ -57,7 +57,7 @@ func TestInteropBackendDispatch(t *testing.T) {
 				return nil
 			}
 			backend := interopBackend{
-				version:      protocol.Version1_3,
+				versions:     []protocol.Version{protocol.Version1_3},
 				otherVersion: test.versionErr,
 				scenarios:    map[interopScenario]interopRun{interopHandshake: run, interopKeyUpdatePion: run},
 			}

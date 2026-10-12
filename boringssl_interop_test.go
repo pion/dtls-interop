@@ -20,7 +20,7 @@ func boringSSLInterop() interopBackend {
 	notImplemented := skipInterop(errInteropNotImplemented, "BoringSSL adapter")
 
 	return interopBackend{
-		version:      protocol.Version1_3,
+		versions:     []protocol.Version{protocol.Version1_3},
 		otherVersion: errInteropNotImplemented,
 		scenarios: map[interopScenario]interopRun{
 			interopHandshake:        runBoringSSLCase,

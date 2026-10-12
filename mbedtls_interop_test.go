@@ -22,7 +22,7 @@ func mbedTLSInterop() interopBackend {
 	notImplemented := skipInterop(errInteropNotImplemented, "Mbed TLS adapter")
 
 	return interopBackend{
-		version:      protocol.Version1_2,
+		versions:     []protocol.Version{protocol.Version1_2},
 		otherVersion: errInteropNotSupported,
 		scenarios: map[interopScenario]interopRun{
 			interopHandshake:        runMbedTLSCase,

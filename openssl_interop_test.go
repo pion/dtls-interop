@@ -32,7 +32,7 @@ func openSSLInterop() interopBackend {
 	notImplemented := skipInterop(errInteropNotImplemented, "OpenSSL adapter")
 
 	return interopBackend{
-		version:      protocol.Version1_2,
+		versions:     []protocol.Version{protocol.Version1_2},
 		otherVersion: errInteropNotSupported,
 		scenarios: map[interopScenario]interopRun{
 			interopHandshake:        runOpenSSLCase,

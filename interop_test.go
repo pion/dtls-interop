@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os/exec"
 	"strings"
 	"sync"
@@ -29,6 +30,8 @@ func TestOpenSSL3Interop(t *testing.T) { runInteropSuite(t, openSSLInterop()) }
 func TestWolfSSLInterop(t *testing.T) { runInteropSuite(t, wolfSSLInterop()) }
 
 func TestPionV3Interop(t *testing.T) { runInteropSuite(t, pionV3Interop()) }
+
+func TestPionV4Interop(t *testing.T) { runInteropSuite(t, pionV4Interop()) }
 
 func TestMbedTLSInterop(t *testing.T) { runInteropSuite(t, mbedTLSInterop()) }
 
@@ -151,4 +154,15 @@ func (output *interopOutput) String() string {
 	defer output.mutex.Unlock()
 
 	return output.buffer.String()
+}
+
+func exchangeInteropData(t *testing.T, sender, receiver net.Conn, message string) {
+	t.Helper()
+	written, err := io.WriteString(sender, message)
+	require.NoError(t, err)
+	require.Equal(t, len(message), written)
+	received := make([]byte, len(message))
+	_, err = io.ReadFull(receiver, received)
+	require.NoError(t, err)
+	require.Equal(t, message, string(received))
 }

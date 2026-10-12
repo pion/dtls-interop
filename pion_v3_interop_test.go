@@ -7,7 +7,6 @@ package main
 
 import (
 	"context"
-	"io"
 	"net"
 	"testing"
 
@@ -23,7 +22,7 @@ func pionV3Interop() interopBackend {
 	notImplemented := skipInterop(errInteropNotImplemented, "Pion v3 adapter")
 
 	return interopBackend{
-		version:      protocol.Version1_2,
+		versions:     []protocol.Version{protocol.Version1_2},
 		otherVersion: errInteropNotSupported,
 		scenarios: map[interopScenario]interopRun{
 			interopHandshake:        testPionV3Interop,
@@ -91,19 +90,8 @@ func testPionV3Interop(t *testing.T, testCase interopCase) error {
 	require.NoError(t, <-peerHandshake)
 	require.NoError(t, testCase.checkConnection(connection))
 
-	exchangePionV3Data(t, connection, peer, "v4-to-v3")
-	exchangePionV3Data(t, peer, connection, "v3-to-v4")
+	exchangeInteropData(t, connection, peer, "v4-to-v3")
+	exchangeInteropData(t, peer, connection, "v3-to-v4")
 
 	return nil
-}
-
-func exchangePionV3Data(t *testing.T, sender, receiver net.Conn, message string) {
-	t.Helper()
-	written, err := io.WriteString(sender, message)
-	require.NoError(t, err)
-	require.Equal(t, len(message), written)
-	received := make([]byte, len(message))
-	_, err = io.ReadFull(receiver, received)
-	require.NoError(t, err)
-	require.Equal(t, message, string(received))
 }

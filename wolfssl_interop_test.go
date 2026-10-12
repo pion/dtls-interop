@@ -45,7 +45,7 @@ func wolfSSLInterop() interopBackend {
 	notImplemented := skipInterop(errInteropNotImplemented, "wolfSSL adapter")
 
 	return interopBackend{
-		version:      protocol.Version1_3,
+		versions:     []protocol.Version{protocol.Version1_3},
 		otherVersion: errInteropNotImplemented,
 		scenarios: map[interopScenario]interopRun{
 			interopHandshake:        runWolfSSLCase,

@@ -10,7 +10,7 @@ inputs:
     required: false
     default: .
   runner:
-    description: Interop runner to execute (all, boringssl, wolfssl, openssl3, pion-v3, or mbedtls)
+    description: Interop runner to execute (all, boringssl, wolfssl, openssl3, pion-v3, pion-v4, or mbedtls)
     required: false
     default: all
 

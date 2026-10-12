@@ -65,7 +65,7 @@ type interopRun func(*testing.T, interopCase) error
 
 // Every scenario needs a handler or an explicit skip.
 type interopBackend struct {
-	version      protocol.Version
+	versions     []protocol.Version
 	otherVersion error
 	scenarios    map[interopScenario]interopRun
 }
@@ -79,7 +79,7 @@ func (backend interopBackend) run(t *testing.T, testCase interopCase) error {
 	if err := testCase.support(); err != nil {
 		return err
 	}
-	if testCase.version != backend.version {
+	if !slices.Contains(backend.versions, testCase.version) {
 		if backend.otherVersion == nil {
 			return fmt.Errorf("%w: version %v", errInteropUnregistered, testCase.version)
 		}
