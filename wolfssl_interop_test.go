@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/pion/dtls/v4"
@@ -374,11 +375,13 @@ func (process *wolfSSLProcess) output() string {
 	return " (" + strings.Join(details, "; ") + ")"
 }
 
-type wolfSSLRebindingProxy struct {
-	downstream *net.UDPConn
-	initial    *net.UDPConn
-	rebound    *net.UDPConn
-	target     *net.UDPAddr
+type rebindingProxy struct {
+	replyGate    atomic.Pointer[chan struct{}]
+	replyBlocked chan struct{}
+	downstream   *net.UDPConn
+	initial      *net.UDPConn
+	rebound      *net.UDPConn
+	target       *net.UDPAddr
 
 	rebind     chan struct{}
 	rebindOnce sync.Once
@@ -428,7 +431,7 @@ func testWolfSSLDTLS13CIDRebinding(t *testing.T, scenario interopCase) error {
 
 	serverAddress, ok := listener.Addr().(*net.UDPAddr)
 	require.Truef(t, ok, "unexpected Pion DTLS listener address type %T", listener.Addr())
-	proxy := newWolfSSLRebindingProxy(t, serverAddress)
+	proxy := newRebindingProxy(t, serverAddress)
 
 	proxyAddress := proxy.address()
 	clientArguments := []string{
@@ -486,7 +489,7 @@ func testWolfSSLDTLS13CIDPolicyDiscard(t *testing.T, scenario interopCase) error
 		peerReceiveCID: "wolf-id",
 	}
 	serverAddress := reserveWolfSSLAddress(t)
-	proxy := newWolfSSLRebindingProxy(t, serverAddress)
+	proxy := newRebindingProxy(t, serverAddress)
 	serverArguments := []string{
 		"-u",
 		"-v", "4",
@@ -532,7 +535,7 @@ func testWolfSSLDTLS13CIDPolicyDiscard(t *testing.T, scenario interopCase) error
 	return nil
 }
 
-func newWolfSSLRebindingProxy(t *testing.T, target *net.UDPAddr) *wolfSSLRebindingProxy {
+func newRebindingProxy(t *testing.T, target *net.UDPAddr) *rebindingProxy {
 	t.Helper()
 
 	listen := func() *net.UDPConn {
@@ -541,13 +544,14 @@ func newWolfSSLRebindingProxy(t *testing.T, target *net.UDPAddr) *wolfSSLRebindi
 
 		return connection
 	}
-	proxy := &wolfSSLRebindingProxy{
-		downstream: listen(),
-		initial:    listen(),
-		rebound:    listen(),
-		target:     target,
-		rebind:     make(chan struct{}),
-		closed:     make(chan struct{}),
+	proxy := &rebindingProxy{
+		replyBlocked: make(chan struct{}, 1),
+		downstream:   listen(),
+		initial:      listen(),
+		rebound:      listen(),
+		target:       target,
+		rebind:       make(chan struct{}),
+		closed:       make(chan struct{}),
 	}
 	proxy.waitGroup.Add(3)
 	go proxy.forwardClientPackets()
@@ -558,13 +562,13 @@ func newWolfSSLRebindingProxy(t *testing.T, target *net.UDPAddr) *wolfSSLRebindi
 	return proxy
 }
 
-func (proxy *wolfSSLRebindingProxy) address() *net.UDPAddr {
+func (proxy *rebindingProxy) address() *net.UDPAddr {
 	address, _ := proxy.downstream.LocalAddr().(*net.UDPAddr)
 
 	return address
 }
 
-func (proxy *wolfSSLRebindingProxy) injectToClient(t *testing.T, datagram []byte) {
+func (proxy *rebindingProxy) injectToClient(t *testing.T, datagram []byte) {
 	t.Helper()
 
 	clientAddr := proxy.getClientAddr()
@@ -581,13 +585,13 @@ func cidlessDTLS13CiphertextRecord() []byte {
 	return record
 }
 
-func (proxy *wolfSSLRebindingProxy) rebindPath() {
+func (proxy *rebindingProxy) rebindPath() {
 	proxy.rebindOnce.Do(func() {
 		close(proxy.rebind)
 	})
 }
 
-func (proxy *wolfSSLRebindingProxy) forwardClientPackets() {
+func (proxy *rebindingProxy) forwardClientPackets() {
 	defer proxy.waitGroup.Done()
 
 	buffer := make([]byte, 64*1024)
@@ -614,7 +618,7 @@ func (proxy *wolfSSLRebindingProxy) forwardClientPackets() {
 	}
 }
 
-func (proxy *wolfSSLRebindingProxy) forwardServerPackets(upstream *net.UDPConn) {
+func (proxy *rebindingProxy) forwardServerPackets(upstream *net.UDPConn) {
 	defer proxy.waitGroup.Done()
 
 	buffer := make([]byte, 64*1024)
@@ -624,6 +628,17 @@ func (proxy *wolfSSLRebindingProxy) forwardServerPackets(upstream *net.UDPConn) 
 			proxy.setError(err)
 
 			return
+		}
+		if gate := proxy.replyGate.Load(); gate != nil {
+			select {
+			case proxy.replyBlocked <- struct{}{}:
+			default:
+			}
+			select {
+			case <-*gate:
+			case <-proxy.closed:
+				return
+			}
 		}
 		clientAddr := proxy.getClientAddr()
 		if clientAddr == nil {
@@ -637,7 +652,7 @@ func (proxy *wolfSSLRebindingProxy) forwardServerPackets(upstream *net.UDPConn) 
 	}
 }
 
-func (proxy *wolfSSLRebindingProxy) setClientAddr(address *net.UDPAddr) {
+func (proxy *rebindingProxy) setClientAddr(address *net.UDPAddr) {
 	proxy.clientMutex.Lock()
 	defer proxy.clientMutex.Unlock()
 
@@ -646,14 +661,14 @@ func (proxy *wolfSSLRebindingProxy) setClientAddr(address *net.UDPAddr) {
 	proxy.clientAddr = &cloned
 }
 
-func (proxy *wolfSSLRebindingProxy) getClientAddr() *net.UDPAddr {
+func (proxy *rebindingProxy) getClientAddr() *net.UDPAddr {
 	proxy.clientMutex.RLock()
 	defer proxy.clientMutex.RUnlock()
 
 	return proxy.clientAddr
 }
 
-func (proxy *wolfSSLRebindingProxy) setError(err error) {
+func (proxy *rebindingProxy) setError(err error) {
 	select {
 	case <-proxy.closed:
 		return
@@ -667,14 +682,14 @@ func (proxy *wolfSSLRebindingProxy) setError(err error) {
 	}
 }
 
-func (proxy *wolfSSLRebindingProxy) err() error {
+func (proxy *rebindingProxy) err() error {
 	proxy.errorMutex.Lock()
 	defer proxy.errorMutex.Unlock()
 
 	return proxy.loopError
 }
 
-func (proxy *wolfSSLRebindingProxy) close() {
+func (proxy *rebindingProxy) close() {
 	proxy.closeOnce.Do(func() {
 		close(proxy.closed)
 		_ = proxy.downstream.Close()

@@ -31,7 +31,7 @@ tasks:
 
         source="$PION_DTLS_SOURCE"
         if [ -z "$source" ]; then
-          exec go test -v -tags=interop -run "$test_pattern" .
+          exec go test -v -tags=interop -run "$test_pattern" ./...
         fi
 
         if [ -d "$source" ]; then
@@ -67,7 +67,7 @@ tasks:
         )
 
         status=0
-        GOWORK="$workspace_directory/go.work" go test -v -tags=interop -run "$test_pattern" . || status=$?
+        GOWORK="$workspace_directory/go.work" go test -v -tags=interop -run "$test_pattern" ./... || status=$?
         rm -rf -- "$workspace_directory"
         exit "$status"
 
