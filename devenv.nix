@@ -16,6 +16,7 @@ in
     pkgs.cmake
     pkgs.ninja
     pkgs.clang
+    pkgs.mbedtls
     (pkgs.writeShellScriptBin "openssl-3" ''
       exec ${openssl3}/bin/openssl "$@"
     '')
