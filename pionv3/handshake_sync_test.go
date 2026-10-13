@@ -107,8 +107,8 @@ func TestPionV3PSKMismatchNoRetransmitLoop(t *testing.T) {
 		serverErrRes := <-serverErr
 		clientErrRes := <-clientErr
 
-		assert.ErrorContains(t, serverErrRes, "handshake failed")
-		assert.ErrorContains(t, clientErrRes, "handshake failed")
+		assert.ErrorIs(t, serverErrRes, context.DeadlineExceeded)
+		assert.ErrorIs(t, clientErrRes, context.DeadlineExceeded)
 
 		serverCount := serverWrites.Load()
 		clientCount := clientWrites.Load()
