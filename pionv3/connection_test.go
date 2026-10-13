@@ -392,6 +392,9 @@ func runSRTPConfiguration(t *testing.T, version protocol.Version, test srtpConfi
 	if version != protocol.Version1_2 {
 		t.Skip("Pion v3 supports DTLS 1.2 only")
 	}
+	if len(test.ClientSRTP) == 0 && len(test.ServerSRTP) > 0 {
+		t.Skip("Server-only SRTP rejection is only fixed in v4 because it's a behavior change")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
