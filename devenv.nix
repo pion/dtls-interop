@@ -8,6 +8,7 @@ let
   openssl4 = pkgs.callPackage ./nix/openssl-4.nix { };
   boringssl = pkgs.callPackage ./nix/boringssl.nix { };
   wolfssl = pkgs.callPackage ./nix/wolfssl.nix { };
+  openconnect = pkgs.openconnect.override { useOpenSSL = true; };
 in
 {
   packages = [
@@ -27,6 +28,7 @@ in
       exec ${boringssl}/bin/bssl_shim "$@"
     '')
     wolfssl
+    openconnect
   ];
 
   env = {
@@ -36,6 +38,7 @@ in
     DTLS_INTEROP_BSSL_SHIM_BIN = "${boringssl}/bin/bssl_shim";
     DTLS_INTEROP_WOLFSSL_SERVER_BIN = "${wolfssl}/bin/wolfssl-dtls13-server";
     DTLS_INTEROP_WOLFSSL_CLIENT_BIN = "${wolfssl}/bin/wolfssl-dtls13-client";
+    DTLS_INTEROP_OPENCONNECT_BIN = "${openconnect}/bin/openconnect";
   };
 
   enterTest = ''
