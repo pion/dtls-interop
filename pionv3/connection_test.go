@@ -114,28 +114,6 @@ func TestPionV3ReadWriteDeadline(t *testing.T) {
 	assertInteropError(t, err, io.EOF)
 }
 
-func TestPionV3WriteReturnsZeroOnTransportError(t *testing.T) {
-	// V3 returns len(payload) on transport errors.
-	// returning zero is a v4 behavior change.
-	// https://github.com/pion/dtls/pull/1055
-	t.Skip("Returning zero bytes on transport errors requires Pion v4")
-
-	caRaw, cbRaw := packetPipe()
-	caTransport := &writeErrorConn{packetTestConn: caRaw}
-	ca, cb, err := pipeConn(caTransport, cbRaw)
-	require.NoError(t, err)
-	defer func() {
-		caTransport.fail.Store(false)
-		require.NoError(t, ca.Close())
-		require.NoError(t, cb.Close())
-	}()
-
-	caTransport.fail.Store(true)
-	n, err := ca.Write([]byte("application data"))
-	requireInteropError(t, err, errWriteFailed)
-	require.Zero(t, n)
-}
-
 func TestPionV3HandshakeWithAlert(t *testing.T) {
 	lim := test.TimeOut(time.Second * 20)
 	defer lim.Stop()
@@ -338,17 +316,6 @@ func TestPionV3SRTPConfiguration(t *testing.T) {
 			WantServerError: expectedTextError("client requested SRTP but we have no matching profiles"),
 		},
 		{
-			Name:            "SRTP server only",
-			ClientSRTP:      nil,
-			ServerSRTP:      []dtls.SRTPProtectionProfile{dtls.SRTP_AES128_CM_HMAC_SHA1_80},
-			ExpectedProfile: 0,
-			WantClientError: expectedTextError("alert: " + (&alert.Alert{
-				Level:       alert.Fatal,
-				Description: alert.InsufficientSecurity,
-			}).String()),
-			WantServerError: expectedTextError("client requested SRTP but we have no matching profiles"),
-		},
-		{
 			Name: "Multiple Suites",
 			ClientSRTP: []dtls.SRTPProtectionProfile{
 				dtls.SRTP_AES128_CM_HMAC_SHA1_80,
@@ -377,29 +344,15 @@ func TestPionV3SRTPConfiguration(t *testing.T) {
 			WantServerError: nil,
 		},
 	}
-	for _, version := range []struct {
-		name  string
-		value protocol.Version
-	}{
-		{name: "DTLS12", value: protocol.Version1_2},
-		{name: "DTLS13", value: protocol.Version1_3},
-	} {
-		for _, test := range tests {
-			t.Run(version.name+"/"+test.Name, func(t *testing.T) {
-				runSRTPConfiguration(t, version.value, test)
-			})
-		}
+	for _, test := range tests {
+		t.Run("DTLS12/"+test.Name, func(t *testing.T) {
+			runSRTPConfiguration(t, test)
+		})
 	}
 }
 
-func runSRTPConfiguration(t *testing.T, version protocol.Version, test srtpConfigurationTest) {
+func runSRTPConfiguration(t *testing.T, test srtpConfigurationTest) {
 	t.Helper()
-	if version != protocol.Version1_2 {
-		t.Skip("Pion v3 supports DTLS 1.2 only")
-	}
-	if len(test.ClientSRTP) == 0 && len(test.ServerSRTP) > 0 {
-		t.Skip("Server-only SRTP rejection is only fixed in v4 because it's a behavior change")
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -1800,34 +1753,6 @@ func TestPionV3CloseWithoutHandshake(t *testing.T) {
 	server, err := dtls.ServerWithOptions(cb, cb.RemoteAddr(), dtls.WithCertificates(serverCert))
 	assert.NoError(t, err)
 	assert.NoError(t, server.Close())
-}
-
-func TestPionV3DTLS13RetransmittedClientFinalFlight(t *testing.T) {
-	t.Skip("Pion v3 does not support DTLS 1.3")
-}
-
-func TestPionV3DTLSDualStackClient(t *testing.T) { t.Skip("Pion v3 does not support DTLS 1.3") }
-
-func TestPionV3DTLSDualStackClientRejectsNonClientHelloBeforeWrite(t *testing.T) {
-	t.Skip("Pion v3 does not support DTLS 1.3")
-}
-
-func TestPionV3DTLSDualStackServer(t *testing.T) { t.Skip("Pion v3 does not support DTLS 1.3") }
-
-func TestPionV3DetachedConnEvents(t *testing.T) {
-	t.Skip("Pion v3 does not expose detached connections")
-}
-
-func TestPionV3DetachedConnLifecycle(t *testing.T) {
-	t.Skip("Pion v3 does not expose detached connections")
-}
-
-func TestPionV3DetachedConnCanceledContext(t *testing.T) {
-	t.Skip("Pion v3 does not expose detached connections")
-}
-
-func TestPionV3DetachedConnAutonomousRetransmit(t *testing.T) {
-	t.Skip("Pion v3 does not expose detached connections")
 }
 
 func TestPionV3ServerRetainsRejectedTransport(t *testing.T) {

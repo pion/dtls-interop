@@ -341,10 +341,6 @@ func TestPionV3ServerTimeout(t *testing.T) {
 	})
 }
 
-func TestPionV3ProtocolVersionValidation(t *testing.T) {
-	t.Skip("Pion v3 has no public protocol version bounds options")
-}
-
 func TestPionV3RenegotiationInfo(t *testing.T) {
 	resp := make([]byte, 1024)
 

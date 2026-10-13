@@ -115,14 +115,6 @@ func TestPionV3ConnectionID(t *testing.T) {
 	}
 }
 
-func TestPionV3DTLS13HandshakeAndApplicationData(t *testing.T) {
-	t.Skip("Pion v3 does not support DTLS 1.3")
-}
-
-func TestPionV3DTLS13HelloRetryRequestRetransmissionAndReordering(t *testing.T) {
-	t.Skip("Pion v3 does not support DTLS 1.3")
-}
-
 func TestPionV3EllipticCurveConfiguration(t *testing.T) {
 	report := test.CheckRoutines(t)
 	defer report()

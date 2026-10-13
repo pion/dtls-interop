@@ -102,8 +102,4 @@ func testPSK12(t *testing.T) {
 			assertPionPayload(t, server, client, []byte("PSK application data"))
 		})
 	}
-	t.Run("DTLS 1.2 uses first PSK", func(t *testing.T) { t.Skip("Pion v3 accepts a single PSK, not a list") })
-	for _, name := range []string{"DTLS 1.3", "prefer DHE with key share retry", "psk_ke", "psk_ke SHA384 without retry", "psk_ke without common group", "DTLS 1.3 selects second PSK", "DTLS 1.3 selects last PSK", "Dual version selects second PSK", "SHA384", "SHA384 without retry", "Mixed hashes select SHA384", "Mixed hashes select SHA256", "Dual version SHA384"} {
-		t.Run(name, func(t *testing.T) { t.Skip("Pion v3 does not support DTLS 1.3 PSK negotiation") })
-	}
 }

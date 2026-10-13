@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,14 +31,6 @@ import (
 func marshalTestRecord(header recordlayer.Header, content protocol.Content) ([]byte, error) {
 	record := recordlayer.RecordLayer{Header: header, Content: content}
 	return record.Marshal()
-}
-
-func (c *writeErrorConn) WriteTo(b []byte, addr net.Addr) (int, error) {
-	if c.fail.Load() {
-		return 0, errWriteFailed
-	}
-
-	return c.packetTestConn.WriteTo(b, addr)
 }
 
 func (c *packetTestConn) ReadFrom(p []byte) (int, net.Addr, error) {
@@ -369,16 +360,11 @@ var (
 	errExpectedChain           = errors.New("expected chain")
 	errWrongCert               = errors.New("wrong cert")
 	errConnectionAttemptFailed = errors.New("connection attempt failed")
-	errWriteFailed             = errors.New("write failed")
 )
 
 type packetTestConn struct {
 	net.Conn
 	remoteAddr net.Addr
-}
-type writeErrorConn struct {
-	*packetTestConn
-	fail atomic.Bool
 }
 type handshakeResult struct {
 	conn           *dtls.Conn
@@ -461,11 +447,6 @@ func assertPionPayload(t *testing.T, sender, receiver *dtls.Conn, payload []byte
 	n, err = receiver.Read(buf)
 	require.NoError(t, err)
 	require.Equal(t, payload, buf[:n])
-}
-
-func requireInteropError(t *testing.T, actual, expected error) {
-	t.Helper()
-	require.True(t, assertInteropError(t, actual, expected))
 }
 
 func connectionState(t *testing.T, conn *dtls.Conn) *dtls.State {
