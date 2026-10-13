@@ -115,6 +115,11 @@ func TestPionV3ReadWriteDeadline(t *testing.T) {
 }
 
 func TestPionV3WriteReturnsZeroOnTransportError(t *testing.T) {
+	// V3 returns len(payload) on transport errors.
+	// returning zero is a v4 behavior change.
+	// https://github.com/pion/dtls/pull/1055
+	t.Skip("Returning zero bytes on transport errors requires Pion v4")
+
 	caRaw, cbRaw := packetPipe()
 	caTransport := &writeErrorConn{packetTestConn: caRaw}
 	ca, cb, err := pipeConn(caTransport, cbRaw)
