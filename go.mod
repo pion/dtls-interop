@@ -3,7 +3,7 @@ module github.com/pion/dtls-interop
 go 1.24.0
 
 require (
-	github.com/pion/dtls/v3 v3.1.11
+	github.com/pion/dtls/v3 v3.1.12
 	github.com/pion/dtls/v4 v4.0.0-rc.3.0.20261002163140-534c8b4d2c02
 	github.com/stretchr/testify v1.12.1
 )
