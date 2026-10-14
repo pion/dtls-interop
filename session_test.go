@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/gob"
 	"encoding/hex"
 	"errors"
@@ -481,4 +482,222 @@ func (b *backupConn) SetReadDeadline(deadline time.Time) error {
 
 func (b *backupConn) SetWriteDeadline(deadline time.Time) error {
 	return b.curr.Load().SetWriteDeadline(deadline)
+}
+
+type ticketStore struct {
+	memSessStore
+	claims sync.Map
+}
+
+var _ dtls.EarlyDataSessionStore = (*ticketStore)(nil)
+
+func (store *ticketStore) Claim(ticket []byte, expiresAt time.Time) (bool, error) {
+	if !time.Now().Before(expiresAt) {
+		return false, nil
+	}
+	_, claimed := store.claims.LoadOrStore(string(ticket), expiresAt)
+
+	return !claimed, nil
+}
+
+type ticketPair struct {
+	conns     [2]*dtls.DetachedConn // client, server
+	done      [2]bool
+	data      [2][]byte
+	early     []dtls.DetachedEventKind
+	earlyRead [2]bool
+}
+
+func newTicketPair(
+	t *testing.T, certificate tls.Certificate,
+	clientStore dtls.SessionStore, serverStore *ticketStore,
+	clientLimit, serverLimit uint32, retry bool,
+) *ticketPair {
+	t.Helper()
+	client, err := dtls.DetachedClient(&net.UDPAddr{Port: 5555},
+		dtls.WithServerName("ticket.test"), dtls.WithInsecureSkipVerify(true),
+		dtls.WithSessionStore(clientStore, dtls.WithMaxEarlyDataSize(clientLimit)),
+		dtls.WithMinVersion(protocol.Version1_3), dtls.WithMaxVersion(protocol.Version1_3))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	server, err := dtls.DetachedServer(&net.UDPAddr{Port: 4444},
+		dtls.WithCertificates(certificate),
+		dtls.WithSessionStore(serverStore, dtls.WithMaxEarlyDataSize(serverLimit)),
+		dtls.WithInsecureSkipVerifyHello(!retry),
+		dtls.WithMinVersion(protocol.Version1_3), dtls.WithMaxVersion(protocol.Version1_3))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, server.Close()) })
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	t.Cleanup(cancel)
+	require.NoError(t, server.Start(ctx))
+	require.NoError(t, client.Start(ctx))
+
+	return &ticketPair{conns: [2]*dtls.DetachedConn{client, server}}
+}
+
+func (pair *ticketPair) pump(t *testing.T) {
+	t.Helper()
+	for range 100 {
+		progress := false
+		for side, conn := range pair.conns {
+			for event := conn.NextEvent(); event.Kind != dtls.DetachedNoEvent; event = conn.NextEvent() {
+				progress = true
+				pair.handleEvent(t, side, event)
+			}
+		}
+		if !progress {
+			return
+		}
+	}
+	require.FailNow(t, "ticket handshake did not quiesce")
+}
+
+func (pair *ticketPair) handleEvent(t *testing.T, side int, event dtls.DetachedEvent) {
+	t.Helper()
+	switch event.Kind {
+	case dtls.DetachedWriteDatagrams:
+		for _, packet := range event.Datagrams {
+			require.NoError(t, pair.conns[1-side].HandleDatagram(packet, nil))
+		}
+	case dtls.DetachedHandshakeDone:
+		require.False(t, pair.done[side], "duplicate handshake completion")
+		pair.done[side] = true
+	case dtls.DetachedApplicationData:
+		pair.data[side] = append(pair.data[side], event.Data...)
+		if !pair.done[side] {
+			pair.earlyRead[side] = true
+		}
+	case dtls.DetachedEarlyDataReady, dtls.DetachedEarlyDataAccepted, dtls.DetachedEarlyDataRejected:
+		if side == 0 {
+			pair.early = append(pair.early, event.Kind)
+		}
+	case dtls.DetachedClosed:
+		require.FailNow(t, "unexpected connection close", "%v", event.Err)
+	case dtls.DetachedNoEvent:
+	}
+}
+
+func (pair *ticketPair) check(t *testing.T, identity []byte) {
+	t.Helper()
+	pair.pump(t)
+	require.Equal(t, [2]bool{true, true}, pair.done)
+	for _, conn := range pair.conns {
+		state, ok := conn.ConnectionState()
+		require.True(t, ok)
+		require.Equal(t, protocol.Version1_3, state.NegotiatedVersion())
+		require.Equal(t, identity, state.IdentityHint, "ticket must be selected, not a full-handshake fallback")
+	}
+	pair.data = [2][]byte{}
+	for side, conn := range pair.conns {
+		payload := fmt.Appendf(nil, "application data from %d", side)
+		n, err := conn.Write(payload)
+		require.NoError(t, err)
+		require.Equal(t, len(payload), n)
+		pair.pump(t)
+		require.Equal(t, payload, pair.data[1-side])
+	}
+}
+
+func issueTicket(t *testing.T, certificate tls.Certificate, serverStore *ticketStore) ([]byte, dtls.Session) {
+	t.Helper()
+	clientStore := &memSessStore{}
+	pair := newTicketPair(t, certificate, clientStore, serverStore, 0, 64, false)
+	pair.check(t, nil)
+	var key []byte
+	var session dtls.Session
+	clientStore.Range(func(rawKey, value any) bool {
+		var err error
+		encoded, ok := rawKey.(string)
+		require.True(t, ok)
+		key, err = hex.DecodeString(encoded)
+		require.NoError(t, err)
+		session, ok = value.(dtls.Session)
+		require.True(t, ok)
+
+		return false
+	})
+	require.NotEmpty(t, key, "client must process NewSessionTicket")
+	require.NotEmpty(t, session.ID)
+	require.NotEmpty(t, session.Secret)
+	require.NotNil(t, session.Ticket)
+	require.Equal(t, uint32(64), session.Ticket.MaxEarlyDataSize)
+	stored, err := serverStore.Get(session.ID)
+	require.NoError(t, err)
+	require.Equal(t, session.Secret, stored.Secret)
+
+	return key, session
+}
+
+func TestPionV4SessionTicketResumption(t *testing.T) {
+	certificate, err := selfsign.GenerateSelfSigned()
+	require.NoError(t, err)
+	for _, missing := range []bool{false, true} {
+		name := "Resumed"
+		if missing {
+			name = "UnknownTicketFallsBack"
+		}
+		t.Run(name, func(t *testing.T) {
+			serverStore := &ticketStore{}
+			key, session := issueTicket(t, certificate, serverStore)
+			clientStore := &memSessStore{}
+			require.NoError(t, clientStore.Set(key, session))
+			identity := session.ID
+			if missing {
+				require.NoError(t, serverStore.Del(session.ID))
+				identity = nil
+			}
+			pair := newTicketPair(t, certificate, clientStore, serverStore, 0, 64, false)
+			pair.check(t, identity)
+			require.Empty(t, pair.early, "ordinary resumption must not offer 0-RTT")
+		})
+	}
+}
+
+func TestPionV4EarlyData(t *testing.T) {
+	certificate, err := selfsign.GenerateSelfSigned()
+	require.NoError(t, err)
+	for _, scenario := range []struct {
+		name        string
+		serverLimit uint32
+		retry       bool
+		replay      bool
+		accepted    bool
+	}{
+		{name: "Accepted", serverLimit: 64, accepted: true},
+		{name: "PolicyDisabled"},
+		{name: "HelloRetryRequest", serverLimit: 64, retry: true},
+		{name: "ReplayRejected", serverLimit: 64, replay: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			serverStore := &ticketStore{}
+			key, session := issueTicket(t, certificate, serverStore)
+			attempts := 1
+			if scenario.replay {
+				attempts = 2
+			}
+			for attempt := range attempts {
+				clientStore := &ticketStore{}
+				require.NoError(t, clientStore.Set(key, session))
+				pair := newTicketPair(t, certificate, clientStore, serverStore, 64, scenario.serverLimit, scenario.retry)
+				payload := []byte("early application data")
+				n, err := pair.conns[0].WriteEarlyData(payload)
+				require.NoError(t, err)
+				require.Equal(t, len(payload), n)
+				pair.pump(t)
+				require.Contains(t, pair.early, dtls.DetachedEarlyDataReady)
+				accepted := scenario.accepted || (scenario.replay && attempt == 0)
+				if accepted {
+					require.Contains(t, pair.early, dtls.DetachedEarlyDataAccepted)
+					require.NotContains(t, pair.early, dtls.DetachedEarlyDataRejected)
+					require.Equal(t, payload, pair.data[1])
+					require.True(t, pair.earlyRead[1], "0-RTT must arrive before server handshake completion")
+				} else {
+					require.Contains(t, pair.early, dtls.DetachedEarlyDataRejected)
+					require.NotContains(t, pair.early, dtls.DetachedEarlyDataAccepted)
+					require.Empty(t, pair.data[1], "rejected early data must not reach the application")
+				}
+				pair.check(t, session.ID)
+			}
+		})
+	}
 }
