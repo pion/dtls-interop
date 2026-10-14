@@ -17,6 +17,14 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Read environment cache inputs
+      id: environment
+      shell: bash
+      run: |
+        cd "$GITHUB_ACTION_PATH"
+        echo "hash=$(sha256sum action.yml devenv.nix devenv.yaml devenv.lock nix/*.nix | sha256sum | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+        echo "devenv-rev=$(jq -r '.nodes.devenv.locked.rev' devenv.lock)" >> "$GITHUB_OUTPUT"
+
     - name: Install Nix
       uses: cachix/install-nix-action@v31
 
@@ -25,15 +33,17 @@ runs:
       with:
         name: devenv
 
-    - name: Configure build cache
-      uses: determinatesystems/magic-nix-cache-action@v15
+    - name: Restore and save Nix store
+      uses: nix-community/cache-nix-action@v7
       with:
-        use-gha-cache: enabled
-        use-flakehub: disabled
+        primary-key: nix-store-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.runner }}-${{ steps.environment.outputs.hash }}
+        restore-prefixes-first-match: nix-store-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.runner }}-
 
     - name: Install Devenv
       shell: bash
-      run: nix profile add github:cachix/devenv
+      env:
+        DEVENV_REV: ${{ steps.environment.outputs.devenv-rev }}
+      run: nix profile add "github:cachix/devenv/$DEVENV_REV"
 
     - name: Run DTLS interoperability tests
       shell: bash
@@ -47,4 +57,4 @@ runs:
 
         cd "$GITHUB_ACTION_PATH"
 
-        devenv shell -- task interop "RUNNER=$INTEROP_RUNNER" -- "$DTLS_PATH"
+        devenv --option interop.runner:string "$INTEROP_RUNNER" shell -- task interop "RUNNER=$INTEROP_RUNNER" -- "$DTLS_PATH"
