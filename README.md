@@ -28,6 +28,7 @@ The following implementations have test runners:
 | OpenSSL 4 | `openssl4` |
 | wolfSSL | `wolfssl` |
 | Mbed TLS | `mbedtls` |
+| TLS-Anvil (DTLS 1.2 and 1.3 server tests) | `anvil` |
 
 ## Run locally
 

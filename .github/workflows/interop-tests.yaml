@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [boringssl, wolfssl, openssl3, openssl4, pion-v3, pion-v4, mbedtls]
+        runner: [boringssl, wolfssl, openssl3, openssl4, pion-v3, pion-v4, mbedtls, anvil]
     steps:
       - name: Check out DTLS interop
         uses: actions/checkout@v7
@@ -54,3 +54,12 @@ jobs:
         with:
           dtls-path: dtls
           runner: ${{ matrix.runner }}
+
+      - name: Upload Anvil reports
+        if: always() && matrix.runner == 'anvil'
+        uses: actions/upload-artifact@v4
+        with:
+          name: anvil-reports
+          path: .cache/anvil/
+          include-hidden-files: true
+          if-no-files-found: warn

@@ -23,15 +23,21 @@ tasks:
           pion-v3) test_pattern='^TestPionV3' ;;
           pion-v4) test_pattern='^TestPionV4' ;;
           mbedtls) test_pattern='^TestMbedTLS' ;;
+          anvil) test_pattern='^TestAnvil' ;;
           *)
-            echo "unknown interop runner: $DTLS_INTEROP_RUNNER (expected all, boringssl, wolfssl, openssl3, openssl4, pion-v3, pion-v4, or mbedtls)" >&2
+            echo "unknown interop runner: $DTLS_INTEROP_RUNNER (expected all, boringssl, wolfssl, openssl3, openssl4, pion-v3, pion-v4, mbedtls, or anvil)" >&2
             exit 1
             ;;
         esac
 
+        case "$DTLS_INTEROP_RUNNER" in
+          all|anvil) set -- -count=1 ;;
+          *) set -- ;;
+        esac
+
         source="$PION_DTLS_SOURCE"
         if [ -z "$source" ]; then
-          exec go test -v -tags=interop -run "$test_pattern" ./...
+          exec go test -v -tags=interop -run "$test_pattern" "$@" ./...
         fi
 
         if [ -d "$source" ]; then
@@ -67,7 +73,7 @@ tasks:
         )
 
         status=0
-        GOWORK="$workspace_directory/go.work" go test -v -tags=interop -run "$test_pattern" ./... || status=$?
+        GOWORK="$workspace_directory/go.work" go test -v -tags=interop -run "$test_pattern" "$@" ./... || status=$?
         rm -rf -- "$workspace_directory"
         exit "$status"
 

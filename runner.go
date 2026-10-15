@@ -24,6 +24,7 @@ type runnerMode string
 
 const (
 	boringSSL13Mode runnerMode = "boringssl-dtls13"
+	anvilMode       runnerMode = "anvil"
 )
 
 var (
@@ -60,13 +61,21 @@ func run(
 	flags := flag.NewFlagSet("dtls-interop", flag.ContinueOnError)
 	flags.SetOutput(stdout)
 
-	mode := flags.String("mode", string(boringSSL13Mode), "interop mode to run")
+	mode := flags.String("mode", string(boringSSL13Mode), "interop mode to run (boringssl-dtls13 or anvil)")
 	shimPath := flags.String(
 		"bssl-shim",
 		environmentOrDefault("DTLS_INTEROP_BSSL_SHIM_BIN", "bssl-shim"),
 		"path to bssl_shim",
 	)
-	timeout := flags.Duration("timeout", defaultTimeout, "maximum time for the probe")
+	timeout := flags.Duration("timeout", defaultTimeout, "maximum run time (Anvil defaults to 8m)")
+	anvilBin := flags.String("anvil-bin", environmentOrDefault("DTLS_INTEROP_ANVIL_BIN", "tls-anvil"),
+		"path to the TLS-Anvil executable (or a java -jar wrapper)")
+	anvilProfile := flags.String("anvil-profile", environmentOrDefault("DTLS_INTEROP_ANVIL_PROFILE", ""),
+		"Anvil profile JSON file (default: DTLS 1.2 handshake or DTLS 1.3 server cases)")
+	anvilVersion := flags.String("anvil-version", environmentOrDefault("DTLS_INTEROP_ANVIL_VERSION", anvilVersion12),
+		"DTLS version for Anvil: 1.2 or 1.3")
+	anvilOutput := flags.String("anvil-output", environmentOrDefault("DTLS_INTEROP_ANVIL_OUTPUT_DIR", ".cache/anvil"),
+		"parent directory for retained Anvil reports")
 
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -77,11 +86,19 @@ func run(
 	if *timeout <= 0 {
 		return errInvalidTimeout
 	}
+	if runnerMode(*mode) == anvilMode {
+		setAnvilTimeout(flags, timeout)
+	}
 
 	runCtx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
 
 	switch runnerMode(*mode) {
+	case anvilMode:
+		return runAnvil(runCtx, anvilOptions{
+			binary: *anvilBin, profile: *anvilProfile, outputDir: *anvilOutput,
+			version: *anvilVersion,
+		}, stdout, commandContext)
 	case boringSSL13Mode:
 		if err := probeBoringSSL13(runCtx, *shimPath, stdout, commandContext); err != nil {
 			return fmt.Errorf("%s: %w", boringSSL13Mode, err)
