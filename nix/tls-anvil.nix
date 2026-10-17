@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
 # SPDX-License-Identifier: MIT
 
-{ lib, stdenvNoCC, fetchurl, fetchFromGitHub, runCommand, maven, unzip, jdk_headless, makeWrapper }:
+{ lib, stdenvNoCC, fetchurl, fetchFromGitHub, runCommand, maven, unzip, jdk_headless, graalvmPackages, makeWrapper }:
 
 let
   # Reuse the release's dependency jars while compiling Anvil from pinned branche.
@@ -134,7 +134,7 @@ stdenvNoCC.mkDerivation {
   installPhase = ''
     runHook preInstall
     mkdir -p $out/bin
-    makeWrapper ${jdk_headless}/bin/java $out/bin/tls-anvil \
+    makeWrapper ${graalvmPackages.graalvm-ce}/bin/java $out/bin/tls-anvil \
       --add-flags "-cp ${compiledDependencies}/dependency-fixes.jar:${application}/share/tls-anvil/TLS-Anvil.jar:${compiledDependencies}/lib/* de.rub.nds.tlstest.suite.Main"
     runHook postInstall
   '';
