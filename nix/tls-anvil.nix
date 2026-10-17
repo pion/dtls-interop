@@ -52,34 +52,11 @@ let
     rev = "2840b754e13a949a90502fb9d8033c6c86acf363";
     hash = "sha256-xxMKZxJ5kSYacm+YMnhwTK5bPrbayZhmGco4pdb/0Kg=";
   };
-in
-stdenvNoCC.mkDerivation rec {
-  pname = "tls-anvil";
-  version = "1.5.3-unstable-2026-10-15";
 
-  src = fetchFromGitHub {
-    owner = "JoTurk";
-    repo = "TLS-Anvil";
-    rev = "1fc71886b6173b9a3d3a2090dacea2193bfb87a0"; # jo/dtls-13
-    hash = "sha256-zlS9JK97IZT5PqZoRHWNOVvS1KMhu5wNSqohfDZd++Y=";
-  };
-
-  nativeBuildInputs = [ unzip jdk_headless makeWrapper ];
-
-  # Adapt Anvil's older API calls to Scanner's TLS-Attacker dependency.
-  postPatch = ''
-    substituteInPlace \
-      TLS-Test-Framework/src/main/java/de/rub/nds/tlstest/framework/FeatureExtractionResult.java \
-      TLS-Testsuite/src/main/java/de/rub/nds/tlstest/suite/tests/{client,server}/tls13/rfc8446/KeyShare.java \
-      --replace-fail 'isCurve' 'isEcGroup'
-    substituteInPlace \
-      TLS-Test-Framework/src/main/java/de/rub/nds/tlstest/framework/model/derivationParameter/CertificateDerivation.java \
-      --replace-fail 'setCertificateChainConfig((List<X509CertificateConfig>) getSelectedValue())' \
-        'setCertificateChainConfigs(List.of((List<X509CertificateConfig>) getSelectedValue()))'
-  '';
-
-  buildPhase = ''
-    runHook preBuild
+  # Cache dependencies and Scanner independently of Anvil and its runtime.
+  compiledDependencies = runCommand "tls-anvil-dependencies" {
+    nativeBuildInputs = [ unzip jdk_headless ];
+  } ''
     unzip -q ${dependencies} -d dependencies
     cp -r dependencies/apps/lib .
     chmod -R u+w lib
@@ -101,20 +78,68 @@ stdenvNoCC.mkDerivation rec {
       @scanner-sources
     jar --create --file dependency-fixes.jar -C dependency-classes .
 
-    find TLS-Test-Framework/src/main/java TLS-Testsuite/src/main/java -name '*.java' > sources
-    javac -proc:none -cp 'dependency-fixes.jar:lib/*' -d classes @sources
-    jar --create --file TLS-Anvil.jar -C classes . -C TLS-Testsuite/src/main/resources .
-    runHook postBuild
+    mkdir -p $out
+    cp -r lib dependency-fixes.jar $out/
   '';
+
+  application = stdenvNoCC.mkDerivation {
+    pname = "tls-anvil";
+    version = "1.5.3-unstable-2026-10-15";
+
+    src = fetchFromGitHub {
+      owner = "JoTurk";
+      repo = "TLS-Anvil";
+      rev = "1fc71886b6173b9a3d3a2090dacea2193bfb87a0"; # jo/dtls-13
+      hash = "sha256-zlS9JK97IZT5PqZoRHWNOVvS1KMhu5wNSqohfDZd++Y=";
+    };
+
+    nativeBuildInputs = [ jdk_headless ];
+
+    # Adapt Anvil's older API calls to Scanner's TLS-Attacker dependency.
+    postPatch = ''
+      substituteInPlace \
+        TLS-Test-Framework/src/main/java/de/rub/nds/tlstest/framework/FeatureExtractionResult.java \
+        TLS-Testsuite/src/main/java/de/rub/nds/tlstest/suite/tests/{client,server}/tls13/rfc8446/KeyShare.java \
+        --replace-fail 'isCurve' 'isEcGroup'
+      substituteInPlace \
+        TLS-Test-Framework/src/main/java/de/rub/nds/tlstest/framework/model/derivationParameter/CertificateDerivation.java \
+        --replace-fail 'setCertificateChainConfig((List<X509CertificateConfig>) getSelectedValue())' \
+          'setCertificateChainConfigs(List.of((List<X509CertificateConfig>) getSelectedValue()))'
+    '';
+
+    buildPhase = ''
+      runHook preBuild
+      cp -r ${compiledDependencies}/lib .
+      cp ${compiledDependencies}/dependency-fixes.jar .
+
+      find TLS-Test-Framework/src/main/java TLS-Testsuite/src/main/java -name '*.java' > sources
+      javac -proc:none -cp 'dependency-fixes.jar:lib/*' -d classes @sources
+      jar --create --file TLS-Anvil.jar -C classes . -C TLS-Testsuite/src/main/resources .
+      runHook postBuild
+    '';
+
+    installPhase = ''
+      runHook preInstall
+      mkdir -p $out/share/tls-anvil
+      cp TLS-Anvil.jar $out/share/tls-anvil/
+      runHook postInstall
+    '';
+  };
+in
+stdenvNoCC.mkDerivation {
+  inherit (application) pname version;
+  dontUnpack = true;
+  nativeBuildInputs = [ makeWrapper ];
 
   installPhase = ''
     runHook preInstall
-    mkdir -p $out/share/tls-anvil $out/bin
-    cp -r TLS-Anvil.jar dependency-fixes.jar lib $out/share/tls-anvil/
+    mkdir -p $out/bin
     makeWrapper ${jdk_headless}/bin/java $out/bin/tls-anvil \
-      --add-flags "-cp $out/share/tls-anvil/dependency-fixes.jar:$out/share/tls-anvil/TLS-Anvil.jar:$out/share/tls-anvil/lib/* de.rub.nds.tlstest.suite.Main"
+      --add-flags "-cp ${compiledDependencies}/dependency-fixes.jar:${application}/share/tls-anvil/TLS-Anvil.jar:${compiledDependencies}/lib/* de.rub.nds.tlstest.suite.Main"
     runHook postInstall
   '';
+
+  passthru = { inherit application compiledDependencies; };
 
   meta = {
     description = "TLS-Anvil with native DTLS 1.2 and 1.3 tests";

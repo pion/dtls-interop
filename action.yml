@@ -45,11 +45,25 @@ runs:
         DEVENV_REV: ${{ steps.environment.outputs.devenv-rev }}
       run: nix profile add "github:cachix/devenv/$DEVENV_REV"
 
+    - name: Restore and save Go modules and build cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ runner.temp }}/dtls-interop-go/mod
+          ${{ runner.temp }}/dtls-interop-go/build
+        key: go-interop-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.runner }}-${{ steps.environment.outputs.hash }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          go-interop-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.runner }}-${{ steps.environment.outputs.hash }}-${{ github.sha }}-
+          go-interop-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.runner }}-${{ steps.environment.outputs.hash }}-
+          go-interop-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.runner }}-
+
     - name: Run DTLS interoperability tests
       shell: bash
       env:
         DTLS_PATH: ${{ inputs.dtls-path }}
         INTEROP_RUNNER: ${{ inputs.runner }}
+        GOMODCACHE: ${{ runner.temp }}/dtls-interop-go/mod
+        GOCACHE: ${{ runner.temp }}/dtls-interop-go/build
       run: |
         if [[ "$DTLS_PATH" != /* ]]; then
           DTLS_PATH="$GITHUB_WORKSPACE/$DTLS_PATH"
