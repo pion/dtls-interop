@@ -93,6 +93,9 @@ func TestPionV4SessionResume(t *testing.T) {
 			server, err := testServer(ctx, cb, cb.RemoteAddr(), opts, false)
 			require.NoError(t, err)
 
+			res := <-clientRes
+			require.NoError(t, res.err)
+
 			state, ok := server.ConnectionState()
 			require.True(t, ok)
 
@@ -110,8 +113,6 @@ func TestPionV4SessionResume(t *testing.T) {
 			assert.Equal(t, serverCID, serverCommon.LocalConnectionID)
 			assert.Equal(t, clientCID, serverCommon.RemoteConnectionID)
 
-			res := <-clientRes
-			require.NoError(t, res.err)
 			clientCommon := serializedSnapshot(t, connectionState(t, res.c))
 			assert.Equal(t, clientCID, clientCommon.LocalConnectionID)
 			assert.Equal(t, serverCID, clientCommon.RemoteConnectionID)
@@ -146,6 +147,9 @@ func TestPionV4SessionResume(t *testing.T) {
 		server, err := testServer(ctx, cb, cb.RemoteAddr(), []dtls.ServerOption{dtls.WithSessionStore(s2)}, true)
 		assert.NoError(t, err)
 
+		res := <-clientRes
+		require.NoError(t, res.err)
+
 		state, ok := server.ConnectionState()
 		assert.True(t, ok)
 		actualSessionID := state.SessionID
@@ -156,9 +160,6 @@ func TestPionV4SessionResume(t *testing.T) {
 		defer func() {
 			assert.NoError(t, server.Close())
 		}()
-
-		res := <-clientRes
-		assert.NoError(t, res.err)
 
 		cs, _ := s1.Get([]byte(ca.RemoteAddr().String() + "_example.com"))
 		assert.Equal(t, actualMasterSecret, cs.Secret, "TestSessionResumption mismatch")
@@ -282,10 +283,7 @@ func TestPionV4ConnectionStateRoleAndVersion(t *testing.T) {
 	}
 }
 
-var (
-	errMessageMismatch        = errors.New("messages mismatch")
-	errInvalidConnectionState = errors.New("failed to get connection state")
-)
+var errMessageMismatch = errors.New("messages mismatch")
 
 func TestPionV4ResumeClient(t *testing.T) {
 	DoTestResume(t, resumeClient, resumeServer)
@@ -404,25 +402,23 @@ func DoTestResume(
 		fatal(t, errChan, fmt.Errorf("%w: %s != %s", errMessageMismatch, message, recv[:n]))
 	}
 
-	if err = localConn1.Close(); err != nil {
-		fatal(t, errChan, err)
-	}
 	// Select the replacement transport, then wake any read on the old pipe.
 	remoteConn.curr.Store(rc2)
-	if err = rc1.Close(); err != nil {
-		fatal(t, errChan, err)
-	}
 
-	// Serialize and deserialize state
-	state, ok := local.ConnectionState()
-	if !ok {
-		fatal(t, errChan, errInvalidConnectionState)
+	// ExportState stops the old connection and captures its final counters.
+	state, err := local.ExportState()
+	if err != nil {
+		fatal(t, errChan, err)
 	}
 	var b []byte
 	b, err = state.MarshalBinary()
 	if err != nil {
 		fatal(t, errChan, err)
 	}
+	if err = rc1.Close(); err != nil {
+		fatal(t, errChan, err)
+	}
+
 	deserialized := &dtls.State{}
 	if err = deserialized.UnmarshalBinary(b); err != nil {
 		fatal(t, errChan, err)

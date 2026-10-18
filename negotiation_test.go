@@ -466,6 +466,9 @@ func TestPionV4ConnectionID(t *testing.T) {
 				}
 			}()
 
+			assertPionPayload(t, server, res.c, []byte("server CID data"))
+			assertPionPayload(t, res.c, server, []byte("client CID data"))
+
 			clientSaved := serializedSnapshot(t, connectionState(t, res.c))
 			serverSaved := serializedSnapshot(t, connectionState(t, server))
 			assert.Equal(t, tt.clientConnectionID, clientSaved.LocalConnectionID)
@@ -474,8 +477,6 @@ func TestPionV4ConnectionID(t *testing.T) {
 			assert.Equal(t, tt.clientConnectionID, serverSaved.RemoteConnectionID)
 			assert.False(t, clientSaved.RRCNegotiated)
 			assert.False(t, serverSaved.RRCNegotiated)
-			assertPionPayload(t, server, res.c, []byte("server CID data"))
-			assertPionPayload(t, res.c, server, []byte("client CID data"))
 		})
 	}
 }
