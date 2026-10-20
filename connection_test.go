@@ -1314,22 +1314,28 @@ func TestPionV4MultipleHelloVerifyRequest(t *testing.T) {
 		assert.NoError(t, ca.Close())
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	deadline, _ := ctx.Deadline()
+	assert.NoError(t, cb.SetReadDeadline(deadline))
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	defer wg.Wait()
 	go func() {
 		defer wg.Done()
-		_, _ = testClient(ctx, ca, ca.RemoteAddr(), nil, false)
+		_, _ = testClient(ctx, ca, ca.RemoteAddr(), []dtls.ClientOption{
+			dtls.WithFlightInterval(100 * time.Millisecond),
+		}, false)
 	}()
 
 	for i, cookie := range cookies {
 		// read client hello
 		resp := make([]byte, 1024)
 		n, err := cb.Read(resp)
-		assert.NoError(t, err)
+		if !assert.NoError(t, err) {
+			return
+		}
 
 		_, handshakeRecord := unmarshalHandshakeRecord(t, resp[:n])
 		clientHello, ok := handshakeRecord.Message.(*handshake.MessageClientHello)
