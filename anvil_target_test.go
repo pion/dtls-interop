@@ -34,7 +34,7 @@ func TestAnvil13Process(t *testing.T) {
 	err := runAnvil(context.Background(), anvilOptions{
 		binary: "fake-anvil", profile: profilePath, outputDir: outputDir, version: "1.3",
 	}, io.Discard, func(ctx context.Context, _ string, args ...string) *exec.Cmd {
-		require.Equal(t, "-dtls13", args[0])
+		require.Equal(t, "-dtls", args[0])
 		require.Contains(t, args, "2")
 
 		return exec.CommandContext(ctx, "sh", "-c",

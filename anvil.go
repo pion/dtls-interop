@@ -110,12 +110,12 @@ func runAnvilCommand(
 	}()
 	defer cancel()
 
-	versionFlag, strength := "-dtls", "1"
+	strength := "1"
 	if version == protocol.Version1_3 {
-		versionFlag, strength = "-dtls13", "2"
+		strength = "2"
 	}
 	command := commandContext(runCtx, binary,
-		versionFlag, "-parallelTests", "1", "-parallelHandshakes", "1",
+		"-dtls", "-parallelTests", "1", "-parallelHandshakes", "1",
 		"-strength", strength, "-connectionTimeout", "1000", "-disableTcpDump", "-ignoreCache",
 		"-outputFolder", runDir, "-profileFolder", runDir, "-profiles", "profile",
 		"server", "-connect", listener.Addr().String(),

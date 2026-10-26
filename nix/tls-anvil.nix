@@ -89,8 +89,8 @@ let
     src = fetchFromGitHub {
       owner = "JoTurk";
       repo = "TLS-Anvil";
-      rev = "1fc71886b6173b9a3d3a2090dacea2193bfb87a0"; # jo/dtls-13
-      hash = "sha256-zlS9JK97IZT5PqZoRHWNOVvS1KMhu5wNSqohfDZd++Y=";
+      rev = "4224e4c5da7b0d6d3fda24f6b8f165c18b6a1ecf"; # jo/dtls-13
+      hash = "sha256-3ZfnampEAZAL/ybrMvFhTGlM20xmZ/y9oVh/mqWCsKQ=";
     };
 
     nativeBuildInputs = [ jdk_headless ];
