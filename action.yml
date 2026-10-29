@@ -46,7 +46,7 @@ runs:
       run: nix profile add "github:cachix/devenv/$DEVENV_REV"
 
     - name: Restore and save Go modules and build cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: |
           ${{ runner.temp }}/dtls-interop-go/mod
