@@ -1241,36 +1241,44 @@ func TestPionV3MultipleHelloVerifyRequest(t *testing.T) {
 	ca, cb := packetPipe()
 	defer func() {
 		assert.NoError(t, ca.Close())
+		assert.NoError(t, cb.Close())
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
+	deadline, _ := ctx.Deadline()
+	require.NoError(t, cb.SetReadDeadline(deadline))
 
 	var wg sync.WaitGroup
 	wg.Add(1)
-	defer wg.Wait()
+	defer func() {
+		cancel()
+		wg.Wait()
+	}()
 	go func() {
 		defer wg.Done()
-		_, _ = testClient(ctx, ca, ca.RemoteAddr(), nil, false)
+		// Repeated cookie challenges respect retry backoff; keep it below the test timeout.
+		_, _ = testClient(ctx, ca, ca.RemoteAddr(), []dtls.ClientOption{
+			dtls.WithFlightInterval(10 * time.Millisecond),
+		}, false)
 	}()
 
 	for i, cookie := range cookies {
 		resp := make([]byte, 1024)
 		n, err := cb.Read(resp)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		_, handshakeRecord := unmarshalHandshakeRecord(t, resp[:n])
 		clientHello, ok := handshakeRecord.Message.(*handshake.MessageClientHello)
-		assert.True(t, ok)
+		require.True(t, ok)
 		assert.Equal(t, cookie, clientHello.Cookie)
 		if len(packets) <= i {
 			break
 		}
 
 		_, err = cb.Write(packets[i])
-		assert.NoError(t, err)
+		require.NoError(t, err)
 	}
-	cancel()
 }
 
 func TestPionV3ServerNameIndicationExtension(t *testing.T) {
