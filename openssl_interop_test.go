@@ -19,12 +19,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/pion/dtls/v4"
 	cryptosuite "github.com/pion/dtls/v4/pkg/crypto/ciphersuite"
 	"github.com/pion/dtls/v4/pkg/crypto/selfsign"
 	"github.com/pion/dtls/v4/pkg/protocol"
+	"github.com/pion/dtls/v4/pkg/protocol/extension"
+	extension13 "github.com/pion/dtls/v4/pkg/protocol/extension/dtls13"
+	"github.com/pion/dtls/v4/pkg/protocol/handshake"
+	"github.com/pion/dtls/v4/pkg/protocol/recordlayer"
 	"github.com/stretchr/testify/require"
 )
 
@@ -74,7 +79,7 @@ func runOpenSSLCase(t *testing.T, testCase interopCase, majorVersion string) err
 	return nil
 }
 
-func testPionClientOpenSSLServer(t *testing.T, path string, testCase interopCase) {
+func testPionClientOpenSSLServer(t *testing.T, path string, testCase interopCase) protocol.Version {
 	t.Helper()
 	config := pionConfigForCase(testCase)
 
@@ -133,7 +138,7 @@ func testPionClientOpenSSLServer(t *testing.T, path string, testCase interopCase
 		)
 		clientOptions = append(clientOptions,
 			dtls.WithEllipticCurves(config.groups...),
-			dtls.WithCipherSuites(cryptosuite.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256),
+			dtls.WithCipherSuites(openSSLPionCipherSuites(config.maxVersion)...),
 		)
 	}
 	if testCase.mtu != "" {
@@ -142,25 +147,40 @@ func testPionClientOpenSSLServer(t *testing.T, path string, testCase interopCase
 	process := startInteropProcess(t, ctx, path, arguments...)
 	// s_server flushes ACCEPT after binding its socket.
 	process.waitForOutput(t, ctx, "ACCEPT\n")
-	client, err := dtls.Dial("udp4", address, clientOptions...)
+	socket, err = net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = socket.Close() })
+	probe := &openSSLVersionProbeConn{PacketConn: socket}
+	client, err := dtls.Client(probe, address, clientOptions...)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })
 	exchangeOpenSSLData(t, ctx, client, process, testCase)
+
+	return protocol.Version(probe.receivedHVR.Load()) //nolint:gosec // Stored wire uint16.
 }
 
-func testPionServerOpenSSLClient(t *testing.T, path string, testCase interopCase) {
+func testPionServerOpenSSLClient(t *testing.T, path string, testCase interopCase) [32]byte {
 	t.Helper()
 	config := pionConfigForCase(testCase)
 
 	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
 	defer cancel()
 	certificate := generateOpenSSLCertificate(t)
+	serverHelloRandom := make(chan [32]byte, 1)
 	listener, err := dtls.ListenAddr("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)},
 		dtls.WithCertificates(certificate),
 		dtls.WithEllipticCurves(config.groups...),
-		dtls.WithCipherSuites(cryptosuite.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256),
+		dtls.WithCipherSuites(openSSLPionCipherSuites(config.maxVersion)...),
 		dtls.WithMinVersion(protocol.Version1_2),
 		dtls.WithMaxVersion(config.maxVersion),
+		dtls.WithServerHelloMessageHook(func(hello handshake.MessageServerHello) handshake.Message {
+			select {
+			case serverHelloRandom <- hello.Random.MarshalFixed():
+			default:
+			}
+
+			return &hello
+		}),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = listener.Close() })
@@ -184,6 +204,25 @@ func testPionServerOpenSSLClient(t *testing.T, path string, testCase interopCase
 	server, ok := connection.(*dtls.Conn)
 	require.True(t, ok)
 	exchangeOpenSSLData(t, ctx, server, process, testCase)
+
+	select {
+	case random := <-serverHelloRandom:
+		return random
+	case <-ctx.Done():
+		require.NoError(t, ctx.Err(), "ServerHello hook was not called")
+
+		return [32]byte{}
+	}
+}
+
+// Keep a DTLS 1.3 suite available when testing fallback.
+func openSSLPionCipherSuites(maxVersion protocol.Version) []cryptosuite.ID {
+	suites := []cryptosuite.ID{cryptosuite.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256}
+	if maxVersion == protocol.Version1_3 {
+		suites = append(suites, cryptosuite.TLS_AES_128_GCM_SHA256)
+	}
+
+	return suites
 }
 
 func generateOpenSSLCertificate(t *testing.T) tls.Certificate {
@@ -224,4 +263,182 @@ func exchangeOpenSSLData(
 	require.NoError(t, err, process.output.String())
 	require.Equal(t, openSSLMessage, string(received))
 	t.Log("DTLS 1.2 handshake and application data in both directions completed")
+}
+func TestOpenSSL3VersionLifecycle(t *testing.T) { testOpenSSLVersionLifecycle(t, "3") }
+
+func TestOpenSSL4VersionLifecycle(t *testing.T) { testOpenSSLVersionLifecycle(t, "4") }
+
+func testOpenSSLVersionLifecycle(t *testing.T, major string) {
+	t.Helper()
+	path := environmentOrDefault("DTLS_INTEROP_OPENSSL"+major+"_BIN", "openssl-"+major)
+	for _, mode := range []struct {
+		name     string
+		scenario interopScenario
+	}{
+		{"Single12", interopHandshake},
+		{"Dual", interopVersionFallback},
+	} {
+		t.Run("HelloVerifyRequest10/"+mode.name, func(t *testing.T) {
+			version := testPionClientOpenSSLServer(t, path, interopCase{
+				version: protocol.Version1_2, role: interopPionClient, scenario: mode.scenario,
+			})
+			// A full handshake and application data exchange must succeed..
+			require.Equal(t, protocol.Version1_0, version, "expected a DTLS 1.0 HelloVerifyRequest")
+		})
+	}
+	t.Run("DowngradeSentinel", func(t *testing.T) {
+		random := testPionServerOpenSSLClient(t, path, interopCase{
+			version: protocol.Version1_2, role: interopPionServer, scenario: interopVersionFallback,
+		})
+		require.Equal(t, []byte("DOWNGRD\x01"), random[24:], "dual server negotiated DTLS 1.2 without downgrade sentinel")
+	})
+	for _, version := range []struct {
+		name    string
+		unknown protocol.Version
+	}{
+		{"Control", 0},
+		{"UnknownWith12Minor", protocol.VersionFromBytes(0x0a, 0xfd)},
+		{"UnknownWith13Minor", protocol.VersionFromBytes(0x0a, 0xfc)},
+	} {
+		t.Run("UnknownOfferedVersion/"+version.name, func(t *testing.T) {
+			testOpenSSLUnknownOfferedVersion(t, path, version.unknown)
+		})
+	}
+}
+
+func testOpenSSLUnknownOfferedVersion(t *testing.T, path string, unknown protocol.Version) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
+	defer cancel()
+	socket, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = socket.Close() })
+	deadline, ok := ctx.Deadline()
+	require.True(t, ok)
+	require.NoError(t, socket.SetDeadline(deadline))
+	process := startInteropProcess(t, ctx, path,
+		"s_client", "-dtls1_2", "-connect", socket.LocalAddr().String(), "-quiet",
+		"-groups", "P-256", "-cipher", "ECDHE-RSA-AES128-GCM-SHA256")
+	buffer := make([]byte, 8192)
+	n, peer, err := socket.ReadFrom(buffer)
+	require.NoError(t, err, process.output.String())
+	datagram := buffer[:n]
+	if unknown != 0 {
+		datagram = addUnknownOfferedVersion(t, datagram, unknown)
+	}
+	probe := &openSSLVersionProbeConn{
+		PacketConn: socket, firstDatagram: datagram, peer: peer,
+		sentHVR: make(chan protocol.Version, 1),
+	}
+	server, err := dtls.Server(probe, peer,
+		dtls.WithCertificates(generateOpenSSLCertificate(t)),
+		dtls.WithCipherSuites(openSSLPionCipherSuites(protocol.Version1_3)...),
+		dtls.WithMinVersion(protocol.Version1_2), dtls.WithMaxVersion(protocol.Version1_3))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = server.Close() })
+	done := make(chan error, 1)
+	go func() { done <- server.HandshakeContext(ctx) }()
+	select {
+	case version := <-probe.sentHVR:
+		cancel()
+		<-done
+		require.Contains(t, []protocol.Version{protocol.Version1_0, protocol.Version1_2}, version)
+		t.Log("Pion selected DTLS 1.2 and sent HelloVerifyRequest")
+	case err := <-done:
+		require.FailNowf(t, "Pion failed before sending HelloVerifyRequest", "%v: %s", err, process.output.String())
+	case <-ctx.Done():
+		<-done
+		require.NoError(t, ctx.Err(), process.output.String())
+	}
+}
+
+type openSSLVersionProbeConn struct {
+	net.PacketConn
+	receivedHVR   atomic.Uint32
+	sentHVR       chan protocol.Version
+	firstDatagram []byte
+	peer          net.Addr
+}
+
+func (conn *openSSLVersionProbeConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
+	if conn.firstDatagram != nil {
+		n := copy(buffer, conn.firstDatagram)
+		conn.firstDatagram = nil
+
+		return n, conn.peer, nil
+	}
+	n, peer, err := conn.PacketConn.ReadFrom(buffer)
+	if err == nil {
+		if version := helloVerifyRequestVersion(buffer[:n]); version != 0 {
+			conn.receivedHVR.Store(uint32(version))
+		}
+	}
+
+	return n, peer, err
+}
+
+func (conn *openSSLVersionProbeConn) WriteTo(buffer []byte, peer net.Addr) (int, error) {
+	n, err := conn.PacketConn.WriteTo(buffer, peer)
+	if err == nil {
+		if version := helloVerifyRequestVersion(buffer); version != 0 {
+			select {
+			case conn.sentHVR <- version:
+			default:
+			}
+		}
+	}
+
+	return n, err
+}
+
+func helloVerifyRequestVersion(datagram []byte) protocol.Version {
+	records, err := recordlayer.UnpackDatagram(datagram, recordlayer.UnpackDatagramConfig{})
+	if err != nil {
+		return 0
+	}
+	for _, raw := range records {
+		record, err := recordlayer.ParseRecord(raw, 0)
+		if err != nil || record.ContentType() != protocol.ContentTypeHandshake || record.Epoch() != 0 {
+			continue
+		}
+		var message handshake.Handshake
+		if message.Unmarshal(record.Payload()) == nil {
+			if hello, ok := message.Message.(*handshake.MessageHelloVerifyRequest); ok {
+				return hello.Version
+			}
+		}
+	}
+
+	return 0
+}
+
+func addUnknownOfferedVersion(t *testing.T, datagram []byte, unknown protocol.Version) []byte {
+	t.Helper()
+	records, err := recordlayer.UnpackDatagram(datagram, recordlayer.UnpackDatagramConfig{})
+	require.NoError(t, err)
+	require.Len(t, records, 1, "probe requires one unfragmented OpenSSL ClientHello")
+	record, err := recordlayer.ParseRecord(records[0], 0)
+	require.NoError(t, err)
+	require.Equal(t, protocol.ContentTypeHandshake, record.ContentType())
+	require.Zero(t, record.Epoch())
+	var message handshake.Handshake
+	require.NoError(t, message.Unmarshal(record.Payload()))
+	hello, ok := message.Message.(*handshake.MessageClientHello)
+	require.True(t, ok, "expected OpenSSL ClientHello")
+	for _, value := range hello.Extensions {
+		require.NotEqual(t, extension.TypeSupportedVersions, value.ExtensionType(),
+			"OpenSSL DTLS 1.2 ClientHello already contains supported_versions")
+	}
+	hello.Extensions = append(hello.Extensions, &extension13.OfferedVersions{
+		Versions: []protocol.Version{unknown, protocol.Version1_2},
+	})
+	payload, err := message.Marshal()
+	require.NoError(t, err)
+	replacement, err := recordlayer.MarshalRecord(recordlayer.RecordConfig{
+		ContentType: record.ContentType(), Version: record.Version(),
+		Epoch: record.Epoch(), SequenceNumber: record.SequenceNumber(),
+	}, payload)
+	require.NoError(t, err)
+
+	return replacement
 }
