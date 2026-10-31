@@ -27,7 +27,6 @@ import (
 	"github.com/pion/dtls/v4/pkg/crypto/selfsign"
 	"github.com/pion/dtls/v4/pkg/protocol"
 	"github.com/pion/dtls/v4/pkg/protocol/alert"
-	"github.com/pion/dtls/v4/pkg/protocol/extension"
 	"github.com/pion/dtls/v4/pkg/protocol/handshake"
 	"github.com/pion/dtls/v4/pkg/protocol/recordlayer"
 	"github.com/pion/logging"
@@ -820,11 +819,15 @@ func TestPionV4ExtendedMasterSecret(t *testing.T) {
 			c := make(chan result)
 
 			go func() {
-				client, err := testClient(ctx, ca, ca.RemoteAddr(), tt.clientOpts, true)
+				opts := []dtls.ClientOption{dtls.WithMaxVersion(protocol.Version1_2)}
+				opts = append(opts, tt.clientOpts...)
+				client, err := testClient(ctx, ca, ca.RemoteAddr(), opts, true)
 				c <- result{client, err}
 			}()
 
-			server, err := testServer(ctx, cb, cb.RemoteAddr(), tt.serverOpts, true)
+			opts := []dtls.ServerOption{dtls.WithMaxVersion(protocol.Version1_2)}
+			opts = append(opts, tt.serverOpts...)
+			server, err := testServer(ctx, cb, cb.RemoteAddr(), opts, true)
 			res := <-c
 			defer func() {
 				if err == nil {
@@ -1179,100 +1182,52 @@ func TestPionV4CertificateAndPSKServer(t *testing.T) {
 	}
 }
 
-func TestPionV4PSKConfiguration(t *testing.T) { //nolint:cyclop
-	// Check for leaking routines
-	report := test.CheckRoutines(t)
-	defer report()
+func TestPionV4PSKConfiguration(t *testing.T) {
+	defer test.CheckRoutines(t)()
+	psk := dtls.PSK{Identity: []byte{0x00}, Key: []byte{0x00, 0x01, 0x02}}
+	certificate, err := selfsign.GenerateSelfSigned()
+	require.NoError(t, err)
 
-	for _, test := range []struct {
-		Name                 string
-		ClientHasCertificate bool
-		ServerHasCertificate bool
-		ClientPSK            dtls.PSKClientCallback
-		ServerPSK            dtls.PSKServerCallback
-		WantClientError      error
-		WantServerError      error
-	}{
-		{
-			Name:                 "psk and no certificate specified",
-			ClientHasCertificate: false,
-			ServerHasCertificate: false,
-			ClientPSK: func() ([]dtls.PSK, error) {
-				return []dtls.PSK{{Identity: []byte{0x00}, Key: []byte{0x00, 0x01, 0x02}}}, nil
-			},
-			ServerPSK: func(identities [][]byte) (*dtls.PSK, error) {
-				return &dtls.PSK{Identity: identities[0], Key: []byte{0x00, 0x01, 0x02}}, nil
-			},
-			WantClientError: expectedTextError("connection can not be created, pre-shared key present " +
-				"but no compatible CipherSuite"),
-			WantServerError: expectedTextError("connection can not be created, pre-shared key present " +
-				"but no compatible CipherSuite"),
-		},
-		{
-			Name:                 "psk and certificate specified",
-			ClientHasCertificate: true,
-			ServerHasCertificate: true,
-			ClientPSK: func() ([]dtls.PSK, error) {
-				return []dtls.PSK{{Identity: []byte{0x00}, Key: []byte{0x00, 0x01, 0x02}}}, nil
-			},
-			ServerPSK: func(identities [][]byte) (*dtls.PSK, error) {
-				return &dtls.PSK{Identity: identities[0], Key: []byte{0x00, 0x01, 0x02}}, nil
-			},
-			WantClientError: expectedTextError("connection can not be created, pre-shared key present " +
-				"but no compatible CipherSuite"),
-			WantServerError: expectedTextError("connection can not be created, pre-shared key present " +
-				"but no compatible CipherSuite"),
-		},
-	} {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		ca, cb := packetPipe()
-		type result struct {
-			c   *dtls.Conn
-			err error
-		}
-		resultCh := make(chan result)
-
-		go func() {
-			var opts []dtls.ClientOption
-			if test.ClientPSK != nil {
-				opts = append(opts, dtls.WithPSK(test.ClientPSK, nil))
+	runProtocolVersionMatrix(t, func(t *testing.T, version protocol.Version) {
+		t.Helper()
+		for _, withCertificate := range []bool{false, true} {
+			name := "WithoutCertificate"
+			if withCertificate {
+				name = "WithCertificate"
 			}
-			client, err := testClient(
-				ctx,
-				ca,
-				ca.RemoteAddr(),
-				opts,
-				test.ClientHasCertificate,
-			)
-			resultCh <- result{client, err}
-		}()
+			t.Run(name, func(t *testing.T) {
+				clientOpts := []dtls.ClientOption{
+					dtls.WithMinVersion(version), dtls.WithMaxVersion(version),
+					dtls.WithPSK(func() ([]dtls.PSK, error) { return []dtls.PSK{psk}, nil }, nil),
+				}
+				serverOpts := []dtls.ServerOption{
+					dtls.WithMinVersion(version), dtls.WithMaxVersion(version),
+					dtls.WithPSK(nil, func([][]byte) (*dtls.PSK, error) { return &psk, nil }),
+				}
+				if withCertificate {
+					clientOpts = append(clientOpts, dtls.WithCertificates(certificate))
+					serverOpts = append(serverOpts, dtls.WithCertificates(certificate))
+				}
+				client, server := handshakePair(t, clientOpts, serverOpts)
+				for _, result := range []handshakeResult{client, server} {
+					if version == protocol.Version1_2 {
+						// DTLS 1.2 needs explicit PSK suites; DTLS 1.3 defaults support PSK.
+						want := expectedTextError("connection can not be created, pre-shared key present " +
+							"but no compatible CipherSuite")
+						assertInteropError(t, result.configErr, want)
 
-		var opts []dtls.ServerOption
-		if test.ServerPSK != nil {
-			opts = append(opts, dtls.WithPSK(nil, test.ServerPSK))
+						continue
+					}
+					require.NoError(t, result.configErr)
+					require.NoError(t, result.handshakeError)
+					state, ok := result.conn.ConnectionState()
+					require.True(t, ok)
+					assert.Equal(t, version, state.NegotiatedVersion())
+					assert.Equal(t, psk.Identity, state.IdentityHint)
+				}
+			})
 		}
-		_, err := testServer(
-			ctx,
-			cb,
-			cb.RemoteAddr(),
-			opts,
-			test.ServerHasCertificate,
-		)
-		if err != nil || test.WantServerError != nil {
-			if err == nil || test.WantServerError == nil || err.Error() != test.WantServerError.Error() {
-				assert.Failf(t, "TestPSKConfiguration", "Server Error Mismatch '%s'", test.Name)
-			}
-		}
-
-		res := <-resultCh
-		if res.err != nil || test.WantClientError != nil {
-			if res.err == nil || test.WantClientError == nil && res.err.Error() != test.WantClientError.Error() {
-				assert.Failf(t, "TestPSKConfiguration", "Client Error Mismatch '%s'", test.Name)
-			}
-		}
-	}
+	})
 }
 
 func TestPionV4MultipleHelloVerifyRequest(t *testing.T) {
@@ -1325,6 +1280,7 @@ func TestPionV4MultipleHelloVerifyRequest(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		_, _ = testClient(ctx, ca, ca.RemoteAddr(), []dtls.ClientOption{
+			dtls.WithMaxVersion(protocol.Version1_2),
 			dtls.WithFlightInterval(100 * time.Millisecond),
 		}, false)
 	}()
@@ -1352,80 +1308,43 @@ func TestPionV4MultipleHelloVerifyRequest(t *testing.T) {
 }
 
 func TestPionV4ServerNameIndicationExtension(t *testing.T) {
-	// Limit runtime in case of deadlocks
-	lim := test.TimeOut(time.Second * 20)
-	defer lim.Stop()
+	defer test.CheckRoutines(t)()
+	certificate, err := selfsign.GenerateSelfSigned()
+	require.NoError(t, err)
 
-	// Check for leaking routines
-	report := test.CheckRoutines(t)
-	defer report()
-
-	for _, test := range []struct {
-		Name       string
-		serverName string
-		Expected   []byte
-		IncludeSNI bool
-	}{
-		{
-			Name:       "Server name is a valid hostname",
-			serverName: "example.com",
-			Expected:   []byte("example.com"),
-			IncludeSNI: true,
-		},
-		{
-			Name:       "Server name is an IP literal",
-			serverName: "1.2.3.4",
-			Expected:   []byte(""),
-			IncludeSNI: false,
-		},
-		{
-			Name:       "Server name is empty",
-			serverName: "",
-			Expected:   []byte(""),
-			IncludeSNI: false,
-		},
-	} {
-		t.Run(test.Name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			ca, cb := packetPipe()
-			go func() {
-				_, _ = testClient(
-					ctx,
-					ca,
-					ca.RemoteAddr(),
-					[]dtls.ClientOption{dtls.WithServerName(test.serverName)},
-					false,
+	runProtocolVersionMatrix(t, func(t *testing.T, version protocol.Version) {
+		t.Helper()
+		for _, tt := range []struct {
+			name, serverName, want string
+		}{
+			{"Hostname", "example.com", "example.com"},
+			{"IPLiteral", "1.2.3.4", ""},
+			{"Empty", "", ""},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				client, server := handshakePair(t,
+					[]dtls.ClientOption{
+						dtls.WithMinVersion(version), dtls.WithMaxVersion(version),
+						dtls.WithServerName(tt.serverName), dtls.WithInsecureSkipVerify(true),
+					},
+					[]dtls.ServerOption{
+						dtls.WithMinVersion(version), dtls.WithMaxVersion(version),
+						dtls.WithCertificates(certificate),
+					},
 				)
-			}()
-
-			// Receive ClientHello
-			resp := make([]byte, 1024)
-			n, err := cb.Read(resp)
-			assert.NoError(t, err)
-
-			_, handshakeRecord := unmarshalHandshakeRecord(t, resp[:n])
-
-			clientHello, ok := handshakeRecord.Message.(*handshake.MessageClientHello)
-			assert.True(t, ok)
-
-			gotSNI := false
-			var actualServerName string
-			for _, v := range clientHello.Extensions {
-				if _, ok := v.(*extension.ServerNameOffer); ok {
-					gotSNI = true
-					extensionServerName, ok := v.(*extension.ServerNameOffer)
-					assert.True(t, ok)
-
-					actualServerName = extensionServerName.ServerName
+				for _, result := range []handshakeResult{client, server} {
+					require.NoError(t, result.configErr)
+					require.NoError(t, result.handshakeError)
+					state, ok := result.conn.ConnectionState()
+					require.True(t, ok)
+					assert.Equal(t, version, state.NegotiatedVersion())
 				}
-			}
-
-			assert.Equalf(t, test.IncludeSNI, gotSNI, "TestSNI: expected SNI inclusion '%s'", test.Name)
-			assert.Equalf(t, test.Expected, []byte(actualServerName), "TestSNI: server name mismatch '%s'", test.Name)
-		})
-	}
+				state, ok := server.conn.ConnectionState()
+				require.True(t, ok)
+				assert.Equal(t, tt.want, state.ServerName)
+			})
+		}
+	})
 }
 
 func TestPionV4CipherSuiteMatchesCertificateType(t *testing.T) {

@@ -20,6 +20,7 @@ import (
 	cryptosuite "github.com/pion/dtls/v4/pkg/crypto/ciphersuite"
 	"github.com/pion/dtls/v4/pkg/crypto/elliptic"
 	"github.com/pion/dtls/v4/pkg/crypto/hash"
+	"github.com/pion/dtls/v4/pkg/crypto/selfsign"
 	"github.com/pion/dtls/v4/pkg/crypto/signature"
 	"github.com/pion/dtls/v4/pkg/crypto/signaturehash"
 	"github.com/pion/dtls/v4/pkg/protocol"
@@ -29,6 +30,7 @@ import (
 	"github.com/pion/dtls/v4/pkg/protocol/handshake"
 	"github.com/pion/dtls/v4/pkg/protocol/recordlayer"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPionV4ReadUnblocksOnClose(t *testing.T) {
@@ -679,6 +681,65 @@ func TestPionV4RenegotiationInfo(t *testing.T) {
 }
 
 func TestPionV4ALPNExtension(t *testing.T) {
+	certificate, err := selfsign.GenerateSelfSigned()
+	require.NoError(t, err)
+
+	runProtocolVersionMatrix(t, func(t *testing.T, version protocol.Version) {
+		t.Helper()
+		for _, tt := range []struct {
+			name           string
+			client, server []string
+			want           string
+			wantError      bool
+		}{
+			{"Negotiate", []string{"http/1.1", "spd/1"}, []string{"spd/1"}, "spd/1", false},
+			{"ServerWithoutALPN", []string{"http/1.1", "spd/1"}, nil, "", false},
+			{
+				name:   "ServerPrecedence",
+				client: []string{"http/1.1", "spd/1", "http/3"},
+				server: []string{"ssh/2", "http/3", "spd/1"},
+				want:   "http/3",
+			},
+			{"NoOverlap", []string{"http/1.1", "http/3"}, []string{"ssh/2", "spd/1"}, "", true},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				clientOpts := []dtls.ClientOption{
+					dtls.WithMinVersion(version), dtls.WithMaxVersion(version),
+					dtls.WithInsecureSkipVerify(true), dtls.WithSupportedProtocols(tt.client...),
+				}
+				serverOpts := []dtls.ServerOption{
+					dtls.WithMinVersion(version), dtls.WithMaxVersion(version),
+					dtls.WithCertificates(certificate),
+				}
+				if len(tt.server) > 0 {
+					serverOpts = append(serverOpts, dtls.WithSupportedProtocols(tt.server...))
+				}
+				client, server := handshakePair(t, clientOpts, serverOpts)
+				for _, result := range []handshakeResult{client, server} {
+					require.NoError(t, result.configErr)
+					if tt.wantError {
+						require.Error(t, result.handshakeError)
+
+						continue
+					}
+					require.NoError(t, result.handshakeError)
+					state, ok := result.conn.ConnectionState()
+					require.True(t, ok)
+					assert.Equal(t, version, state.NegotiatedVersion())
+					assert.Equal(t, tt.want, state.NegotiatedProtocol)
+				}
+				if tt.wantError {
+					want := expectedTextError("alert: " + (&alert.Alert{
+						Level: alert.Fatal, Description: alert.NoApplicationProtocol,
+					}).String())
+					assertInteropError(t, client.handshakeError, want)
+				}
+			})
+		}
+	})
+}
+
+func TestPionV4ALPNServerHello(t *testing.T) {
 	for _, test := range []struct {
 		Name                   string
 		ClientProtocolNameList []string
@@ -732,7 +793,7 @@ func TestPionV4ALPNExtension(t *testing.T) {
 
 				ca, cb := packetPipe()
 				go func() {
-					var opts []dtls.ClientOption
+					opts := []dtls.ClientOption{dtls.WithMaxVersion(protocol.Version1_2)}
 					if len(test.ClientProtocolNameList) > 0 {
 						opts = append(opts, dtls.WithSupportedProtocols(test.ClientProtocolNameList...))
 					}
@@ -749,7 +810,7 @@ func TestPionV4ALPNExtension(t *testing.T) {
 
 				ca2, cb2 := packetPipe()
 				go func() {
-					var opts []dtls.ServerOption
+					opts := []dtls.ServerOption{dtls.WithMaxVersion(protocol.Version1_2)}
 					if len(test.ServerProtocolNameList) > 0 {
 						opts = append(opts, dtls.WithSupportedProtocols(test.ServerProtocolNameList...))
 					}

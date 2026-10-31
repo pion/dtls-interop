@@ -29,6 +29,19 @@ import (
 )
 
 func TestPionV4SessionResume(t *testing.T) {
+	runProtocolVersionMatrix(t, func(t *testing.T, version protocol.Version) {
+		t.Helper()
+		if version == protocol.Version1_3 {
+			testSessionTicketResumption(t)
+
+			return
+		}
+		testSessionIDResumption(t)
+	})
+}
+
+func testSessionIDResumption(t *testing.T) {
+	t.Helper()
 	// Limit runtime in case of deadlocks
 	lim := test.TimeOut(time.Second * 20)
 	defer lim.Stop()
@@ -137,6 +150,7 @@ func TestPionV4SessionResume(t *testing.T) {
 		ca, cb := packetPipe()
 		go func() {
 			opts := []dtls.ClientOption{
+				dtls.WithMaxVersion(protocol.Version1_2),
 				dtls.WithServerName("example.com"),
 				dtls.WithSessionStore(s1),
 			}
@@ -144,7 +158,10 @@ func TestPionV4SessionResume(t *testing.T) {
 			clientRes <- result{c, err}
 		}()
 
-		server, err := testServer(ctx, cb, cb.RemoteAddr(), []dtls.ServerOption{dtls.WithSessionStore(s2)}, true)
+		server, err := testServer(ctx, cb, cb.RemoteAddr(), []dtls.ServerOption{
+			dtls.WithMaxVersion(protocol.Version1_2),
+			dtls.WithSessionStore(s2),
+		}, true)
 		assert.NoError(t, err)
 
 		res := <-clientRes
@@ -637,7 +654,8 @@ func issueTicket(t *testing.T, certificate tls.Certificate, serverStore *ticketS
 	return key, session
 }
 
-func TestPionV4SessionTicketResumption(t *testing.T) {
+func testSessionTicketResumption(t *testing.T) {
+	t.Helper()
 	certificate, err := selfsign.GenerateSelfSigned()
 	require.NoError(t, err)
 	for _, missing := range []bool{false, true} {

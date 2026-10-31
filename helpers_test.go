@@ -176,6 +176,19 @@ func testServer(
 	return conn, conn.HandshakeContext(ctx)
 }
 
+func runProtocolVersionMatrix(t *testing.T, run func(*testing.T, protocol.Version)) {
+	t.Helper()
+	for _, version := range []struct {
+		name  string
+		value protocol.Version
+	}{
+		{"DTLS12", protocol.Version1_2},
+		{"DTLS13", protocol.Version1_3},
+	} {
+		t.Run(version.name, func(t *testing.T) { run(t, version.value) })
+	}
+}
+
 func handshakePair(
 	t *testing.T,
 	clientOpts []dtls.ClientOption,
@@ -185,6 +198,8 @@ func handshakePair(
 	handshakeResult,
 ) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
 	ca, cb := packetPipe()
 	t.Cleanup(func() {
 		_ = ca.Close()
@@ -195,14 +210,14 @@ func handshakePair(
 		client, err := dtls.Client(ca, ca.RemoteAddr(), clientOpts...)
 		var handshakeErr error
 		if err == nil {
-			handshakeErr = client.Handshake()
+			handshakeErr = client.HandshakeContext(ctx)
 		}
 		clientCh <- handshakeResult{client, err, handshakeErr}
 	}()
 	server, err := dtls.Server(cb, cb.RemoteAddr(), serverOpts...)
 	var handshakeErr error
 	if err == nil {
-		handshakeErr = server.Handshake()
+		handshakeErr = server.HandshakeContext(ctx)
 	}
 	clientResult := <-clientCh
 	serverResult := handshakeResult{server, err, handshakeErr}
