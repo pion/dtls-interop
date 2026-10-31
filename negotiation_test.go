@@ -31,6 +31,7 @@ import (
 	"github.com/pion/dtls/v4/pkg/protocol/extension"
 	extension13 "github.com/pion/dtls/v4/pkg/protocol/extension/dtls13"
 	"github.com/pion/dtls/v4/pkg/protocol/handshake"
+	handshake12 "github.com/pion/dtls/v4/pkg/protocol/handshake/dtls12"
 	"github.com/pion/dtls/v4/pkg/protocol/recordlayer"
 	"github.com/pion/transport/v5/test"
 	"github.com/stretchr/testify/assert"
@@ -877,7 +878,7 @@ func TestPionV4ClientCertificateTypes(t *testing.T) {
 					dtls.WithCertificates(ecCert),
 					dtls.WithMaxVersion(protocol.Version1_2),
 					dtls.WithClientAuth(dtls.RequestClientCert),
-					dtls.WithCertificateRequestMessageHook(func(req handshake.MessageCertificateRequest) handshake.Message {
+					dtls.WithCertificateRequestMessageHook(func(req handshake12.MessageCertificateRequest) handshake.Message {
 						req.CertificateTypes = tc.types
 
 						return &req
