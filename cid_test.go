@@ -98,14 +98,14 @@ func TestPionV4ListenConnectionIDFragmentedServerHello(t *testing.T) {
 			assert.NoError(t, err)
 			transport := &fragmentedServerHelloConn{PacketConn: socket}
 			listener, err := dtls.Listen(transport,
-				dtls.WithCertificates(certificate), dtls.WithMinVersion(version), dtls.WithMaxVersion(version), dtls.WithMTU(48),
+				dtls.WithCertificates(certificate), dtls.WithMinVersion(version), dtls.WithMaxVersion(version), dtls.WithMTU(80),
 				dtls.WithInsecureSkipVerifyHello(true),
 				dtls.WithConnectionID(func() []byte { return []byte("server-cid") }, dtls.CIDPathMigrationUnsafe),
 			)
 			assert.NoError(t, err)
 			t.Cleanup(func() { _ = listener.Close() })
 			pair := startCIDListenerPair(t, listener,
-				dtls.WithInsecureSkipVerify(true), dtls.WithMinVersion(version), dtls.WithMaxVersion(version), dtls.WithMTU(48),
+				dtls.WithInsecureSkipVerify(true), dtls.WithMinVersion(version), dtls.WithMaxVersion(version), dtls.WithMTU(80),
 				dtls.WithConnectionID(func() []byte { return []byte("client-cid") }, dtls.CIDPathMigrationUnsafe),
 			)
 			assert.NoError(t, <-pair.clientDone)
