@@ -706,6 +706,11 @@ func TestPionV4ALPNExtension(t *testing.T) {
 				clientOpts := []dtls.ClientOption{
 					dtls.WithMinVersion(version), dtls.WithMaxVersion(version),
 					dtls.WithInsecureSkipVerify(true), dtls.WithSupportedProtocols(tt.client...),
+					dtls.WithVerifyConnection(func(state *dtls.State) error {
+						assert.Equal(t, tt.want, state.NegotiatedProtocol)
+
+						return nil
+					}),
 				}
 				serverOpts := []dtls.ServerOption{
 					dtls.WithMinVersion(version), dtls.WithMaxVersion(version),

@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/gob"
 	"encoding/hex"
 	"errors"
@@ -21,8 +22,12 @@ import (
 
 	"github.com/pion/dtls/v4"
 	cryptosuite "github.com/pion/dtls/v4/pkg/crypto/ciphersuite"
+	"github.com/pion/dtls/v4/pkg/crypto/elliptic"
 	"github.com/pion/dtls/v4/pkg/crypto/selfsign"
 	"github.com/pion/dtls/v4/pkg/protocol"
+	extension13 "github.com/pion/dtls/v4/pkg/protocol/extension/dtls13"
+	"github.com/pion/dtls/v4/pkg/protocol/handshake"
+	"github.com/pion/dtls/v4/pkg/protocol/recordlayer"
 	"github.com/pion/transport/v5/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -515,6 +520,13 @@ type ticketStore struct {
 	claims sync.Map
 }
 
+type cachedSessionStore struct {
+	memSessStore
+	session dtls.Session
+}
+
+func (s *cachedSessionStore) Get([]byte) (dtls.Session, error) { return s.session, nil }
+
 var _ dtls.EarlyDataSessionStore = (*ticketStore)(nil)
 
 func (store *ticketStore) Claim(ticket []byte, expiresAt time.Time) (bool, error) {
@@ -532,6 +544,8 @@ type ticketPair struct {
 	data      [2][]byte
 	early     []dtls.DetachedEventKind
 	earlyRead [2]bool
+	resumed   bool
+	hello     []byte
 }
 
 func newTicketPair(
@@ -583,6 +597,9 @@ func (pair *ticketPair) handleEvent(t *testing.T, side int, event dtls.DetachedE
 	switch event.Kind {
 	case dtls.DetachedWriteDatagrams:
 		for _, packet := range event.Datagrams {
+			if side == 1 {
+				pair.observeResumption(t, packet)
+			}
 			require.NoError(t, pair.conns[1-side].HandleDatagram(packet, nil))
 		}
 	case dtls.DetachedHandshakeDone:
@@ -603,15 +620,47 @@ func (pair *ticketPair) handleEvent(t *testing.T, side int, event dtls.DetachedE
 	}
 }
 
+func (pair *ticketPair) observeResumption(t *testing.T, packet []byte) {
+	t.Helper()
+	config := recordlayer.UnpackDatagramConfig{TargetVersion: protocol.Version1_3}
+	records, err := recordlayer.UnpackDatagram(packet, config)
+	require.NoError(t, err)
+	for _, raw := range records {
+		if protocol.ContentType(raw[0]) != protocol.ContentTypeHandshake {
+			continue
+		}
+		record, err := recordlayer.ParseRecord(raw, 0)
+		require.NoError(t, err)
+		var header handshake.Header
+		require.NoError(t, header.Unmarshal(record.Payload()))
+		require.Equal(t, handshake.TypeServerHello, header.Type)
+		require.EqualValues(t, len(pair.hello), header.FragmentOffset)
+		pair.hello = append(pair.hello, record.Payload()[handshake.HeaderLength:]...)
+		if len(pair.hello) < int(header.Length) {
+			continue
+		}
+		hello := &handshake.MessageServerHello{}
+		require.NoError(t, hello.Unmarshal(pair.hello))
+		pair.hello = nil
+		for _, value := range hello.Extensions {
+			if selected, ok := value.(*extension13.SelectedPSK); ok {
+				require.Zero(t, selected.Identity)
+				pair.resumed = true
+			}
+		}
+	}
+}
+
 func (pair *ticketPair) check(t *testing.T, identity []byte) {
 	t.Helper()
 	pair.pump(t)
 	require.Equal(t, [2]bool{true, true}, pair.done)
+	require.Equal(t, len(identity) != 0, pair.resumed, "ticket must be selected, not a full-handshake fallback")
 	for _, conn := range pair.conns {
 		state, ok := conn.ConnectionState()
 		require.True(t, ok)
 		require.Equal(t, protocol.Version1_3, state.NegotiatedVersion())
-		require.Equal(t, identity, state.IdentityHint, "ticket must be selected, not a full-handshake fallback")
+		require.Empty(t, state.IdentityHint)
 	}
 	pair.data = [2][]byte{}
 	for side, conn := range pair.conns {
@@ -726,5 +775,91 @@ func TestPionV4EarlyData(t *testing.T) {
 				pair.check(t, session.ID)
 			}
 		})
+	}
+}
+
+func TestPionV4DTLS13TicketRequiresServerPolicy(t *testing.T) {
+	certificate, err := selfsign.GenerateSelfSigned()
+	require.NoError(t, err)
+	for _, allowCertificate := range []bool{true, false} {
+		session := dtls.Session{
+			Version: 1, IsClient: true, ID: []byte("ticket"), Secret: bytes.Repeat([]byte{1}, 32),
+			Ticket: &dtls.SessionTicket{
+				CipherSuite: cryptosuite.TLS_AES_128_GCM_SHA256, CreatedAt: time.Now(), Lifetime: 60,
+				PeerCertificates: certificate.Certificate,
+			},
+		}
+		session.IdentityHint = []byte("original-psk-identity")
+		clientStore := &cachedSessionStore{session: session}
+		session.IsClient = false
+		serverStore := &cachedSessionStore{session: session}
+		var calls atomic.Int32
+		serverOptions := []dtls.ServerOption{
+			dtls.WithMinVersion(protocol.Version1_3), dtls.WithInsecureSkipVerifyHello(true), dtls.WithSessionStore(serverStore),
+			dtls.WithPSK(nil, func([][]byte) (*dtls.PSK, error) {
+				calls.Add(1)
+
+				return nil, errPSKRejected
+			}),
+		}
+		if allowCertificate {
+			serverOptions = append(serverOptions, dtls.WithCertificates(certificate))
+		}
+		client, server := handshakePair(t, []dtls.ClientOption{
+			dtls.WithMinVersion(protocol.Version1_3), dtls.WithInsecureSkipVerify(true), dtls.WithSessionStore(clientStore),
+		}, serverOptions)
+		require.NoError(t, client.configErr)
+		require.NoError(t, server.configErr)
+		if allowCertificate {
+			require.NoError(t, client.handshakeError)
+			require.NoError(t, server.handshakeError)
+			for _, connection := range []*dtls.Conn{client.conn, server.conn} {
+				state, ok := connection.ConnectionState()
+				require.True(t, ok)
+				assert.Equal(t, session.IdentityHint, state.IdentityHint)
+			}
+		} else {
+			assert.Error(t, client.handshakeError)
+			assert.Error(t, server.handshakeError)
+			assert.Positive(t, calls.Load())
+		}
+	}
+}
+
+func TestPionV4DTLS13TicketCertificatePolicy(t *testing.T) {
+	certificate, err := selfsign.GenerateSelfSigned()
+	require.NoError(t, err)
+	for _, allowed := range []bool{true, false} {
+		store := &cachedSessionStore{session: dtls.Session{
+			Version: 1, IsClient: true, ID: []byte("ticket"), Secret: bytes.Repeat([]byte{1}, 32),
+			Ticket: &dtls.SessionTicket{
+				CipherSuite: cryptosuite.TLS_AES_128_GCM_SHA256, CreatedAt: time.Now(), Lifetime: 60,
+				PeerCertificates: certificate.Certificate,
+			},
+		}}
+		var calls atomic.Int32
+		serverSession := store.session
+		serverSession.IsClient = false
+		client, server := handshakePair(t, []dtls.ClientOption{
+			dtls.WithSessionStore(store), dtls.WithInsecureSkipVerify(true),
+			dtls.WithMinVersion(protocol.Version1_3), dtls.WithEllipticCurves(elliptic.X25519),
+			dtls.WithVerifyPeerCertificate(func([][]byte, [][]*x509.Certificate) error {
+				if calls.Add(1) == 1 && !allowed {
+					return errExample
+				}
+
+				return nil
+			}),
+		}, []dtls.ServerOption{
+			dtls.WithCertificates(certificate), dtls.WithSessionStore(&cachedSessionStore{session: serverSession}),
+			dtls.WithMinVersion(protocol.Version1_3), dtls.WithInsecureSkipVerifyHello(true),
+		})
+		require.NoError(t, client.handshakeError)
+		require.NoError(t, server.handshakeError)
+		want := int32(1)
+		if !allowed {
+			want = 2
+		}
+		assert.Equal(t, want, calls.Load())
 	}
 }

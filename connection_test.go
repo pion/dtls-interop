@@ -545,7 +545,7 @@ func TestPionV4ClientCertificate(t *testing.T) { //nolint:gocyclo,cyclop,maintid
 			"RequestClientCert_cert_sigscheme": { // specify signature algorithm
 				clientOpts: []dtls.ClientOption{dtls.WithRootCAs(srvCAPool), dtls.WithCertificates(cert)},
 				serverOpts: []dtls.ServerOption{
-					dtls.WithSignatureSchemes(tls.ECDSAWithP521AndSHA512),
+					dtls.WithSignatureSchemes(tls.ECDSAWithP256AndSHA256),
 					dtls.WithCertificates(srvCert),
 					dtls.WithClientAuth(dtls.RequestClientCert),
 				},
@@ -2373,5 +2373,40 @@ func TestPionV4ReplayProtection(t *testing.T) { //nolint:cyclop
 
 	for _, r := range received {
 		assert.Equal(t, sent, r)
+	}
+}
+
+func TestPionV4DTLS13CertificateCurves(t *testing.T) {
+	for _, curve := range []cryptoElliptic.Curve{cryptoElliptic.P384(), cryptoElliptic.P521()} {
+		key, err := ecdsa.GenerateKey(curve, rand.Reader)
+		require.NoError(t, err)
+		certificate, err := selfsign.SelfSign(key)
+		require.NoError(t, err)
+		client, server := handshakePair(t, []dtls.ClientOption{
+			dtls.WithMinVersion(protocol.Version1_3), dtls.WithInsecureSkipVerify(true),
+		}, []dtls.ServerOption{dtls.WithMinVersion(protocol.Version1_3), dtls.WithCertificates(certificate)})
+		require.NoError(t, client.handshakeError)
+		require.NoError(t, server.handshakeError)
+	}
+}
+
+func TestPionV4DTLS13EmptyACKPacing(t *testing.T) {
+	addr := &net.UDPAddr{Port: 4444}
+	client, err := dtls.DetachedClient(addr, dtls.WithInsecureSkipVerify(true),
+		dtls.WithMinVersion(protocol.Version1_3), dtls.WithFlightInterval(time.Hour))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+	require.NoError(t, client.Start(t.Context()))
+	require.Equal(t, dtls.DetachedWriteDatagrams, client.NextEvent().Kind)
+	for sequence := range uint64(3) {
+		raw, marshalErr := marshalTestRecord(recordlayer.RecordConfig{
+			Version: protocol.Version1_2, SequenceNumber: sequence,
+		}, &protocol.ACK{})
+		require.NoError(t, marshalErr)
+		require.NoError(t, client.HandleDatagram(raw, addr))
+		if sequence == 0 {
+			require.Equal(t, dtls.DetachedWriteDatagrams, client.NextEvent().Kind)
+		}
+		assert.Equal(t, dtls.DetachedNoEvent, client.NextEvent().Kind)
 	}
 }

@@ -144,7 +144,7 @@ func TestPionV4PSK(t *testing.T) { //nolint:cyclop,maintidx
 			Name:           "SHA384",
 			ClientIdentity: []byte("sha384"),
 			pskHash:        crypto.SHA384,
-			cipherSuites:   []cryptosuite.ID{cryptosuite.TLS_AES_256_GCM_SHA384},
+			cipherSuites:   []cryptosuite.ID{cryptosuite.TLS_AES_128_GCM_SHA256, cryptosuite.TLS_AES_256_GCM_SHA384},
 			minVersion:     protocol.Version1_3,
 			maxVersion:     protocol.Version1_3,
 			wantSuite:      cryptosuite.TLS_AES_256_GCM_SHA384,
@@ -264,6 +264,7 @@ func TestPionV4PSK(t *testing.T) { //nolint:cyclop,maintidx
 				Hash:     test.pskHash,
 			}
 			clientCalls := 0
+			var serverCalls atomic.Int32
 			ca, cb := packetPipe()
 			go func() {
 				clientOpts := []dtls.ClientOption{
@@ -321,6 +322,7 @@ func TestPionV4PSK(t *testing.T) { //nolint:cyclop,maintidx
 			serverOpts := []dtls.ServerOption{
 				dtls.WithInsecureSkipVerifyHello(test.skipRetry),
 				dtls.WithPSK(nil, func(identities [][]byte) (*dtls.PSK, error) {
+					serverCalls.Add(1)
 					for _, identity := range identities {
 						if bytes.Equal(identity, test.ClientIdentity) {
 							return &dtls.PSK{Identity: identity, Key: []byte{0xAB, 0xC1, 0x23}, Hash: test.pskHash}, nil
@@ -368,6 +370,10 @@ func TestPionV4PSK(t *testing.T) { //nolint:cyclop,maintidx
 
 			actualPSKIdentityHint := state.IdentityHint
 			assert.Equal(t, test.ClientIdentity, actualPSKIdentityHint, "TestPSK: Server ClientPSKIdentity Mismatch")
+			if state.NegotiatedVersion() == protocol.Version1_3 && !test.skipRetry &&
+				(count == 1 || test.pskHash == test.unusedHash) {
+				assert.EqualValues(t, 1, serverCalls.Load())
+			}
 
 			defer func() {
 				_ = server.Close()
@@ -572,6 +578,9 @@ func TestPionV4DTLS13HandshakeAndApplicationData(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, serverPayload, buf[:n])
 
+	for range 8 {
+		require.NoError(t, client.UpdateKeys(ctx, dtls.KeyUpdateOptions{}))
+	}
 	require.NoError(t, client.UpdateKeys(ctx, dtls.KeyUpdateOptions{RequestPeerUpdate: true}))
 	updatedClientPayload := []byte("client to server after KeyUpdate")
 	n, err = client.Write(updatedClientPayload)
