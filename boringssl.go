@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -105,6 +106,18 @@ func (options boringSSLProbeOptions) pionCurves() []elliptic.Curve {
 	}
 
 	return []elliptic.Curve{options.curve()}
+}
+
+// pionInitialKeyShares returns the groups a Pion client sends key shares for in
+// its first ClientHello: the most preferred group, plus X25519 after
+// X25519MLKEM768.
+func pionInitialKeyShares(curves []elliptic.Curve) []elliptic.Curve {
+	shares := []elliptic.Curve{curves[0]}
+	if curves[0] == elliptic.X25519MLKEM768 && slices.Contains(curves[1:], elliptic.X25519) {
+		shares = append(shares, elliptic.X25519)
+	}
+
+	return shares
 }
 
 func probeBoringSSL13(
@@ -308,6 +321,12 @@ func startBoringSSLShim(
 	}
 	if options.curve() == elliptic.X25519MLKEM768 {
 		messageTrace = strings.Replace(messageTrace, "write hs 11\n", "write hs 11\nwrite hs 11\n", 1)
+	}
+	if !slices.Contains(pionInitialKeyShares(options.pionCurves()), options.curve()) {
+		// Pion offers the shim's only group without a key share, so BoringSSL
+		// asks for it with a HelloRetryRequest.
+		const helloRetry = "read hs 1\nwrite hs 2\n"
+		messageTrace = strings.Replace(messageTrace, helloRetry, helloRetry+helloRetry, 1)
 	}
 	if messageTrace != "" {
 		arguments = append(arguments, "-expect-msg-callback", messageTrace)

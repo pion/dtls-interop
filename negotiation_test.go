@@ -278,11 +278,17 @@ func TestPionV4PSK(t *testing.T) { //nolint:cyclop,maintidx
 					dtls.WithMaxVersion(test.maxVersion),
 				}
 				if test.keyShareRetry {
+					var initialHelloSeen atomic.Bool
 					clientOpts = append(
 						clientOpts,
 						dtls.WithClientHelloMessageHook(func(hello handshake.MessageClientHello) handshake.Message {
+							// Empty only the initial ClientHello's key shares to force a
+							// HelloRetryRequest; the retry carries the requested share.
+							if !initialHelloSeen.CompareAndSwap(false, true) {
+								return &hello
+							}
 							for _, value := range hello.Extensions {
-								if share, ok := value.(*extension13.ClientKeyShare); ok && len(share.Shares) > 1 {
+								if share, ok := value.(*extension13.ClientKeyShare); ok {
 									share.Shares = nil
 								}
 							}
@@ -798,6 +804,7 @@ func testDTLS13HelloRetryRequestNetworkRecovery(
 	br := test.NewBridge()
 
 	var initialClientHellos, retryClientHellos, retryClientHelloWrites atomic.Int32
+	var initialClientHelloSeen atomic.Bool
 	clientTransport := &connWithCallback{
 		packetTestConn: &packetTestConn{Conn: br.GetConn0(), remoteAddr: br.GetConn1().LocalAddr()},
 		onWrite: func(raw []byte) {
@@ -821,13 +828,16 @@ func testDTLS13HelloRetryRequestNetworkRecovery(
 		dtls.WithFlightInterval(retryInterval),
 		dtls.WithDisableRetransmitBackoff(true),
 		dtls.WithClientHelloMessageHook(func(clientHello handshake.MessageClientHello) handshake.Message {
+			// The hook runs once per generated ClientHello. The first one is the
+			// initial ClientHello; later ones answer the HelloRetryRequest.
+			initial := initialClientHelloSeen.CompareAndSwap(false, true)
 			for i, ext := range clientHello.Extensions {
 				keyShare, ok := ext.(*extension13.ClientKeyShare)
 				if !ok {
 					continue
 				}
 
-				if len(keyShare.Shares) == len(curves) {
+				if initial {
 					initialClientHellos.Add(1)
 					extensions := clientHello.Extensions
 					extensions[i] = &extension13.ClientKeyShare{}
