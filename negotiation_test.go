@@ -388,6 +388,167 @@ func TestPionV4PSK(t *testing.T) { //nolint:cyclop,maintidx
 	}
 }
 
+func TestPionV4PSKCookieRetryCertificateFallback(t *testing.T) { //nolint:cyclop
+	for _, test := range []struct {
+		name           string
+		known          bool
+		noCertificate  bool
+		getCertificate bool
+		noCommonGroup  bool
+		share          string
+		wantRetryShare bool
+		mode           extension13.PSKKeyExchangeMode
+	}{
+		{name: "unknown PSK with empty share", share: "empty", wantRetryShare: true},
+		{name: "unknown PSK with another group share", share: "other", wantRetryShare: true},
+		{name: "unknown PSK with usable share", share: "present", wantRetryShare: true},
+		{name: "unknown PSK with certificate callback", getCertificate: true, share: "empty", wantRetryShare: true},
+		{name: "known PSK with empty share", known: true, share: "empty", wantRetryShare: true},
+		{name: "known PSK with usable share", known: true, share: "present", wantRetryShare: true},
+		{name: "known PSK without certificate", known: true, noCertificate: true, share: "empty"},
+		{name: "known PSK without common group", known: true, noCommonGroup: true, share: "empty"},
+		{name: "known PSK without key share extension", known: true, share: "absent"},
+		{name: "unknown DHE PSK with empty share", share: "empty", mode: extension13.PSKDHEKE, wantRetryShare: true},
+		{
+			name: "known DHE PSK with empty share", known: true, share: "empty",
+			mode: extension13.PSKDHEKE, wantRetryShare: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			certificate, err := selfsign.GenerateSelfSigned()
+			require.NoError(t, err)
+			psk := dtls.PSK{Identity: []byte("identity"), Key: bytes.Repeat([]byte{0x42}, 32), Hash: crypto.SHA256}
+			curves := []elliptic.Curve{elliptic.X25519, elliptic.P256}
+			if test.noCommonGroup {
+				curves = []elliptic.Curve{elliptic.P256}
+			}
+			hellos, lookups := 0, 0
+			var retryShares []extension13.KeyShareEntry
+			clientOptions := []dtls.ClientOption{
+				dtls.WithMinVersion(protocol.Version1_3), dtls.WithMaxVersion(protocol.Version1_3),
+				dtls.WithEllipticCurves(curves...), dtls.WithInsecureSkipVerify(true),
+				dtls.WithClientHelloMessageHook(func(hello handshake.MessageClientHello) handshake.Message {
+					hellos++
+					if hellos == 2 {
+						require.Zero(t, lookups, "PSK lookup must wait for cookie verification")
+					}
+					hello.Extensions = slices.DeleteFunc(hello.Extensions, func(value extension.Value) bool {
+						typ := value.ExtensionType()
+
+						return typ == extension.TypePreSharedKey || typ == extension.TypePSKKeyExchangeModes ||
+							(test.share == "absent" && (typ == extension.TypeKeyShare || typ == extension.TypeSupportedGroups))
+					})
+					for _, value := range hello.Extensions {
+						if share, ok := value.(*extension13.ClientKeyShare); ok {
+							if hellos == 1 && test.share == "empty" {
+								share.Shares = nil
+							} else if hellos == 1 && test.share == "other" {
+								share.Shares = slices.DeleteFunc(share.Shares, func(entry extension13.KeyShareEntry) bool {
+									return entry.Group != elliptic.P256
+								})
+							}
+							if hellos == 2 {
+								retryShares = slices.Clone(share.Shares)
+							}
+						}
+					}
+					hello.Extensions = append(hello.Extensions,
+						&extension13.PSKKeyExchangeModes{Modes: []extension13.PSKKeyExchangeMode{test.mode}},
+						&extension13.OfferedPSKs{
+							Identities: []extension13.PSKIdentity{{Identity: psk.Identity}},
+							Binders:    []extension13.PSKBinder{make([]byte, crypto.SHA256.Size())},
+						},
+					)
+
+					return &hello
+				}),
+			}
+			if test.known {
+				clientOptions = append(clientOptions, dtls.WithPSK(func() ([]dtls.PSK, error) {
+					return []dtls.PSK{psk}, nil
+				}, nil))
+			}
+			serverOptions := []dtls.ServerOption{
+				dtls.WithMinVersion(protocol.Version1_3), dtls.WithMaxVersion(protocol.Version1_3),
+				dtls.WithEllipticCurves(elliptic.X25519),
+				dtls.WithPSK(nil, func(identities [][]byte) (*dtls.PSK, error) {
+					lookups++
+					if test.known {
+						require.Equal(t, [][]byte{psk.Identity}, identities)
+
+						return &psk, nil
+					}
+
+					return nil, nil //nolint:nilnil
+				}),
+			}
+			if test.getCertificate {
+				serverOptions = append(serverOptions,
+					dtls.WithGetCertificate(func(*dtls.ClientHelloInfo) (*tls.Certificate, error) {
+						return &certificate, nil
+					}),
+				)
+			} else if !test.noCertificate {
+				serverOptions = append(serverOptions, dtls.WithCertificates(certificate))
+			}
+			client, err := dtls.DetachedClient(&net.UDPAddr{Port: 5555}, clientOptions...)
+			require.NoError(t, err)
+			server, err := dtls.DetachedServer(&net.UDPAddr{Port: 4444}, serverOptions...)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+			completeDetachedPSKHandshake(t, client, server)
+			require.Equal(t, 2, hellos)
+			require.Equal(t, 1, lookups)
+			if test.wantRetryShare {
+				require.NotEmpty(t, retryShares)
+				require.Equal(t, elliptic.X25519, retryShares[0].Group)
+			} else {
+				require.Empty(t, retryShares)
+			}
+			state, ok := client.ConnectionState()
+			require.True(t, ok)
+			if test.known {
+				require.Empty(t, state.PeerCertificates)
+			} else {
+				require.Equal(t, certificate.Certificate, state.PeerCertificates)
+			}
+		})
+	}
+}
+
+func completeDetachedPSKHandshake(t *testing.T, client, server *dtls.DetachedConn) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, server.Start(ctx))
+	require.NoError(t, client.Start(ctx))
+	done := map[*dtls.DetachedConn]bool{}
+	for range 30 {
+		progress := false
+		for _, pair := range [][2]*dtls.DetachedConn{{client, server}, {server, client}} {
+			for event := pair[0].NextEvent(); event.Kind != dtls.DetachedNoEvent; event = pair[0].NextEvent() {
+				progress = true
+				switch event.Kind {
+				case dtls.DetachedWriteDatagrams:
+					for _, packet := range event.Datagrams {
+						require.NoError(t, pair[1].HandleDatagram(packet, nil))
+					}
+				case dtls.DetachedHandshakeDone:
+					done[pair[0]] = true
+				case dtls.DetachedClosed:
+					require.NoError(t, event.Err)
+				default:
+				}
+			}
+		}
+		if len(done) == 2 {
+			return
+		}
+		require.True(t, progress, "handshake stalled")
+	}
+	require.FailNow(t, "handshake did not complete")
+}
+
 func TestPionV4ConnectionID(t *testing.T) {
 	// Check for leaking routines
 	report := test.CheckRoutines(t)
