@@ -1058,10 +1058,13 @@ func TestPionV4ClientCertificateTypes(t *testing.T) {
 					dtls.WithCertificates(ecCert),
 					dtls.WithMaxVersion(protocol.Version1_2),
 					dtls.WithClientAuth(dtls.RequestClientCert),
-					dtls.WithCertificateRequestMessageHook(func(req handshake12.MessageCertificateRequest) handshake.Message {
-						req.CertificateTypes = tc.types
+					dtls.WithCertificateRequestMessageHook(func(message handshake.Message) handshake.Message {
+						req, ok := message.(*handshake12.MessageCertificateRequest)
+						if assert.True(t, ok, "expected a DTLS 1.2 CertificateRequest") {
+							req.CertificateTypes = tc.types
+						}
 
-						return &req
+						return message
 					}),
 				})
 				assert.NoError(t, client.configErr)
